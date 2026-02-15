@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CertKeeper</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Login Screen -->
+    <div id="login-screen" class="screen">
+      <div class="login-card">
+        <div class="login-logo">🔒</div>
+        <h1>CertKeeper</h1>
+        <p class="subtitle">Let's Encrypt Certificate Management</p>
+        <form id="login-form">
+          <div class="form-group">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required autocomplete="username" />
+          </div>
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required autocomplete="current-password" />
+          </div>
+          <button type="submit" class="btn btn-primary btn-full">Sign In</button>
+          <div id="login-error" class="error-msg hidden"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Setup Screen (first-run, no users exist) -->
+    <div id="setup-screen" class="screen hidden">
+      <div class="login-card">
+        <div class="login-logo">🛠️</div>
+        <h1>Welcome!</h1>
+        <p class="subtitle">Create your admin account to get started.</p>
+        <form id="setup-form">
+          <div class="form-group">
+            <label for="setup-username">Username</label>
+            <input type="text" id="setup-username" name="username" required minlength="3" autocomplete="username" />
+          </div>
+          <div class="form-group">
+            <label for="setup-email">Registration Email</label>
+            <input type="email" id="setup-email" name="email" required placeholder="you@example.com" autocomplete="email" />
+            <small>Used for Let's Encrypt registration and certificate expiry notices.</small>
+          </div>
+          <div class="form-group">
+            <label for="setup-password">Password</label>
+            <input type="password" id="setup-password" name="password" required minlength="8" autocomplete="new-password" />
+            <small>Minimum 8 characters.</small>
+          </div>
+          <div class="form-group">
+            <label for="setup-password-confirm">Confirm Password</label>
+            <input type="password" id="setup-password-confirm" required minlength="8" autocomplete="new-password" />
+          </div>
+          <button type="submit" class="btn btn-primary btn-full">Create Account</button>
+          <div id="setup-error" class="error-msg hidden"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-screen" class="screen hidden">
+      <!-- Sidebar -->
+      <nav class="sidebar">
+        <div class="sidebar-brand">
+          <span class="brand-icon">🔒</span>
+          <span class="brand-text">CertKeeper</span>
+        </div>
+        <ul class="nav-list">
+          <li><a href="#" data-page="dashboard" class="nav-link active">📊 Dashboard</a></li>
+          <li><a href="#" data-page="certificates" class="nav-link">📜 Certificates</a></li>
+          <li><a href="#" data-page="new-cert" class="nav-link">➕ New Certificate</a></li>
+          <li><a href="#" data-page="settings" class="nav-link">⚙️ Settings</a></li>
+        </ul>
+        <div class="sidebar-footer">
+          <span id="current-user"></span>
+          <button id="logout-btn" class="btn btn-sm btn-ghost">Logout</button>
+        </div>
+      </nav>
+
+      <!-- Content area -->
+      <main class="content">
+        <!-- Dashboard Page -->
+        <div id="page-dashboard" class="page">
+          <h2>Dashboard</h2>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-value" id="stat-total">—</div>
+              <div class="stat-label">Total Certs</div>
+            </div>
+            <div class="stat-card stat-success">
+              <div class="stat-value" id="stat-active">—</div>
+              <div class="stat-label">Active</div>
+            </div>
+            <div class="stat-card stat-warning">
+              <div class="stat-value" id="stat-expiring">—</div>
+              <div class="stat-label">Expiring (30d)</div>
+            </div>
+            <div class="stat-card stat-danger">
+              <div class="stat-value" id="stat-errors">—</div>
+              <div class="stat-label">Errors</div>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Recent Activity</h3>
+            <table class="table" id="audit-table">
+              <thead><tr><th>Time</th><th>Action</th><th>Details</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Certificates Page -->
+        <div id="page-certificates" class="page hidden">
+          <div class="page-header">
+            <h2>Certificates</h2>
+            <div class="page-actions">
+              <button id="sync-btn" class="btn btn-secondary">🔄 Sync</button>
+              <button class="btn btn-primary" data-goto="new-cert">➕ New</button>
+            </div>
+          </div>
+          <div class="card">
+            <table class="table" id="certs-table">
+              <thead>
+                <tr>
+                  <th>Domains</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Expires</th>
+                  <th>Auto-Renew</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div id="certs-empty" class="empty-state hidden">
+              <p>No certificates yet. <a href="#" data-goto="new-cert">Request your first certificate</a>.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- New Certificate Page -->
+        <div id="page-new-cert" class="page hidden">
+          <h2>Request New Certificate</h2>
+          <div class="card">
+            <form id="new-cert-form">
+              <div class="form-group">
+                <label for="cert-domains">Domains</label>
+                <input type="text" id="cert-domains" placeholder="example.com, *.example.com" required />
+                <small>Comma-separated. Use *.domain.com for wildcards (requires DNS-01).</small>
+              </div>
+              <div class="form-group">
+                <label for="cert-challenge">Challenge Type</label>
+                <select id="cert-challenge">
+                  <option value="http-01">HTTP-01 (Standalone)</option>
+                  <option value="dns-01">DNS-01 (Cloudflare)</option>
+                </select>
+                <small>Wildcard certificates require DNS-01. HTTP-01 needs port 80 available.</small>
+                <div id="dns01-no-token" class="error-msg hidden" style="margin-top:.4rem">
+                  ⚠ No Cloudflare API token configured. <a href="#" data-goto="settings">Add one in Settings</a> to enable DNS-01.
+                </div>
+              </div>
+              <div id="cert-form-error" class="error-msg hidden"></div>
+              <div id="cert-form-success" class="success-msg hidden"></div>
+              <button type="submit" class="btn btn-primary" id="cert-submit-btn">
+                Request Certificate
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Settings Page -->
+        <div id="page-settings" class="page hidden">
+          <h2>Settings</h2>
+          <div class="settings-tabs">
+            <button class="settings-tab active" data-settings-tab="status">Status</button>
+            <button class="settings-tab" data-settings-tab="email">Registration Email</button>
+            <button class="settings-tab" data-settings-tab="schedule">Renew Schedule</button>
+            <button class="settings-tab" data-settings-tab="cloudflare">Cloudflare API</button>
+            <button class="settings-tab" data-settings-tab="tls">TLS</button>
+            <button class="settings-tab" data-settings-tab="password">Change Password</button>
+          </div>
+
+          <!-- Status Pane -->
+          <div id="settings-status" class="settings-pane active">
+            <div class="card">
+              <h3>Server</h3>
+              <div class="status-grid">
+                <div class="status-item">
+                  <span class="status-label">Node.js</span>
+                  <span class="status-value" id="st-node">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Platform</span>
+                  <span class="status-value" id="st-platform">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Port</span>
+                  <span class="status-value" id="st-port">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Uptime</span>
+                  <span class="status-value" id="st-uptime">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Configuration</h3>
+              <div class="status-grid">
+                <div class="status-item">
+                  <span class="status-label">Staging Mode</span>
+                  <span class="status-value" id="st-staging">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">TLS Certificate</span>
+                  <span class="status-value" id="st-tls">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Credentials Source</span>
+                  <span class="status-value" id="st-creds">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Cloudflare Token</span>
+                  <span class="status-value" id="st-cf">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Registration Email</span>
+                  <span class="status-value" id="st-email">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Renewal Schedule</span>
+                  <span class="status-value" id="st-schedule">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <h3>Certificates</h3>
+              <div class="status-grid">
+                <div class="status-item">
+                  <span class="status-label">Total</span>
+                  <span class="status-value" id="st-certs-total">—</span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Active</span>
+                  <span class="status-value" id="st-certs-active">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cloudflare Pane -->
+          <div id="settings-cloudflare" class="settings-pane">
+            <div class="card">
+              <h3>Cloudflare API Token</h3>
+              <p class="setting-hint">Required for DNS-01 challenges and wildcard certificates.</p>
+              <div id="cf-token-status" style="margin-bottom:.75rem"></div>
+              <form id="cf-token-form">
+                <div class="form-group">
+                  <label for="cf-token">API Token</label>
+                  <input type="password" id="cf-token" placeholder="Enter Cloudflare API token" autocomplete="off" />
+                  <small>Leave empty and save to clear the stored token. If set via environment variable, that value takes priority.</small>
+                </div>
+                <div id="cf-error" class="error-msg hidden"></div>
+                <div id="cf-success" class="success-msg hidden"></div>
+                <button type="submit" class="btn btn-primary">Save Token</button>
+              </form>
+            </div>
+          </div>
+
+          <!-- Email Pane -->
+          <div id="settings-email" class="settings-pane">
+            <div class="card">
+              <h3>Registration Email</h3>
+              <p class="setting-hint">Used for Let's Encrypt account registration and expiry notifications.</p>
+              <div id="email-status" style="margin-bottom:.75rem"></div>
+              <div id="email-env-notice" class="error-msg hidden" style="margin-bottom:.75rem">
+                🔒 Registration email is managed via environment variable (.env). Changes are disabled.
+              </div>
+              <form id="email-form">
+                <div class="form-group">
+                  <label for="setting-email-input">Email Address</label>
+                  <input type="email" id="setting-email-input" placeholder="you@example.com" autocomplete="email" required />
+                  <small>Required for Let’s Encrypt account registration. If set via environment variable, that value takes priority.</small>
+                </div>
+                <div id="email-error" class="error-msg hidden"></div>
+                <div id="email-success" class="success-msg hidden"></div>
+                <button type="submit" class="btn btn-primary">Save Email</button>
+              </form>
+            </div>
+          </div>
+
+          <!-- Password Pane -->
+          <div id="settings-password" class="settings-pane">
+            <div class="card">
+              <h3>Change Password</h3>
+              <div id="pw-env-notice" class="error-msg hidden" style="margin-bottom:.75rem">
+                🔒 Credentials are managed via environment variables (.env). Password changes are disabled.
+              </div>
+              <form id="password-form">
+                <div class="form-group">
+                  <label for="current-pw">Current Password</label>
+                  <input type="password" id="current-pw" required autocomplete="current-password" />
+                </div>
+                <div class="form-group">
+                  <label for="new-pw">New Password</label>
+                  <input type="password" id="new-pw" required minlength="8" autocomplete="new-password" />
+                </div>
+                <div id="pw-error" class="error-msg hidden"></div>
+                <div id="pw-success" class="success-msg hidden"></div>
+                <button type="submit" class="btn btn-primary">Update Password</button>
+              </form>
+            </div>
+          </div>
+
+          <!-- Schedule Pane -->
+          <div id="settings-schedule" class="settings-pane">
+            <div class="card">
+              <h3>Renewal Schedule</h3>
+              <p class="setting-hint">Certbot checks for renewals twice per week. Certificates are only actually renewed when within 30 days of expiry.</p>
+              <div id="sched-status" style="margin-bottom:.75rem"></div>
+              <div id="sched-env-notice" class="error-msg hidden" style="margin-bottom:.75rem">
+                🔒 Renewal schedule is managed via the RENEWAL_CRON environment variable. Changes are disabled.
+              </div>
+              <form id="schedule-form">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+                  <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:.75rem">
+                    <legend style="font-size:.85rem;font-weight:600;padding:0 .25rem">Check 1</legend>
+                    <div class="form-group">
+                      <label for="sched-day1">Day</label>
+                      <select id="sched-day1">
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="sched-time1">Time</label>
+                      <input type="time" id="sched-time1" value="03:00" />
+                    </div>
+                  </fieldset>
+                  <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:.75rem">
+                    <legend style="font-size:.85rem;font-weight:600;padding:0 .25rem">Check 2</legend>
+                    <div class="form-group">
+                      <label for="sched-day2">Day</label>
+                      <select id="sched-day2">
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="sched-time2">Time</label>
+                      <input type="time" id="sched-time2" value="03:00" />
+                    </div>
+                  </fieldset>
+                </div>
+                <div id="sched-error" class="error-msg hidden" style="margin-top:.75rem"></div>
+                <div id="sched-success" class="success-msg hidden" style="margin-top:.75rem"></div>
+                <button type="submit" class="btn btn-primary" style="margin-top:.75rem">Save Schedule</button>
+              </form>
+            </div>
+          </div>
+
+          <!-- TLS Pane -->
+          <div id="settings-tls" class="settings-pane">
+            <div class="card">
+              <h3>TLS Certificate</h3>
+              <p class="setting-hint">The admin UI is served over HTTPS. By default a self-signed certificate is used.</p>
+              <div id="tls-status" style="margin-bottom:.75rem"></div>
+
+              <div class="form-group">
+                <label for="tls-mode">Certificate Source</label>
+                <select id="tls-mode">
+                  <option value="self-signed">Self-signed (default)</option>
+                  <option value="managed">Use a managed certificate</option>
+                  <option value="custom">Upload custom certificate</option>
+                </select>
+              </div>
+
+              <!-- Managed cert selector -->
+              <div id="tls-managed-section" class="hidden">
+                <div class="form-group">
+                  <label for="tls-managed-domain">Select Certificate</label>
+                  <select id="tls-managed-domain">
+                    <option value="">Loading…</option>
+                  </select>
+                  <small>Only active certificates issued by this app are listed.</small>
+                </div>
+              </div>
+
+              <!-- Custom PEM upload -->
+              <div id="tls-custom-section" class="hidden">
+                <div class="form-group">
+                  <label for="tls-cert-pem">Certificate (PEM)</label>
+                  <textarea id="tls-cert-pem" rows="4" placeholder="-----BEGIN CERTIFICATE-----&#10;…&#10;-----END CERTIFICATE-----" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:monospace;font-size:.8rem;padding:.5rem;resize:vertical"></textarea>
+                </div>
+                <div class="form-group">
+                  <label for="tls-key-pem">Private Key (PEM)</label>
+                  <textarea id="tls-key-pem" rows="4" placeholder="-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----" style="width:100%;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:monospace;font-size:.8rem;padding:.5rem;resize:vertical"></textarea>
+                </div>
+              </div>
+
+              <div id="tls-error" class="error-msg hidden"></div>
+              <div id="tls-success" class="success-msg hidden"></div>
+              <button type="button" id="tls-save-btn" class="btn btn-primary">Apply</button>
+              <div id="tls-restart-notice" class="hidden" style="margin-top:.75rem">
+                <p class="setting-hint" style="color:var(--warning)">⚠ Restart the server for the new certificate to take effect.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
