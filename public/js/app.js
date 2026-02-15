@@ -12,7 +12,11 @@
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(url, opts);
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    if (!res.ok) {
+      const err = new Error(data.error || `Request failed (${res.status})`);
+      Object.assign(err, data); // attach full response (e.g. revoked flag)
+      throw err;
+    }
     return data;
   }
 
@@ -37,8 +41,9 @@
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   }
 
-  function statusBadge(status) {
-    return `<span class="badge badge-${status}">${status}</span>`;
+  function statusBadge(status, staging) {
+    const stagingTag = staging ? ' <span class="badge badge-staging">staging</span>' : '';
+    return `<span class="badge badge-${status}">${status}</span>${stagingTag}`;
   }
 
   function escapeHtml(str) {
@@ -102,6 +107,7 @@
       show(warning);
     } else {
       dns01Option.disabled = false;
+      select.value = 'dns-01';
       hide(warning);
     }
   }
@@ -199,7 +205,10 @@
         if (inProgress) hasInProgress = true;
 
         const canRenew = cert.status === 'active' || cert.status === 'expired';
-        const canRevoke = cert.status !== 'issuing' && cert.status !== 'renewing';
+        const canRetry = cert.status === 'error';
+        const canRevoke = cert.certbot_name && !['issuing', 'renewing', 'revoked'].includes(cert.status);
+        const canRemove = !['issuing', 'renewing'].includes(cert.status);
+        const isRevoked = cert.status === 'revoked';
         const hasError = cert.status === 'error' && cert.error_message;
 
         const tr = document.createElement('tr');
@@ -207,7 +216,7 @@
         tr.innerHTML = `
           <td>${cert.domains.map((d) => `<code>${d}</code>`).join(' ')}</td>
           <td>${challengeBadge(cert.challenge_type)}</td>
-          <td>${statusBadge(cert.status)}${inProgress ? ' <span class="spinner"></span>' : ''}${hasError ? ' <button class="btn-error-toggle" title="Show error details">ⓘ</button>' : ''}</td>
+          <td>${statusBadge(cert.status, cert.staging)}${inProgress ? ' <span class="spinner"></span>' : ''}${hasError ? ' <button class="btn-error-toggle" title="Show error details">ⓘ</button>' : ''}</td>
           <td>${formatDate(cert.expires_at)}</td>
           <td>
             <label class="toggle">
@@ -217,7 +226,10 @@
           </td>
           <td>
             <button class="btn btn-sm btn-secondary renew-btn" data-id="${cert.id}" ${canRenew ? '' : 'disabled'}>Renew</button>
-            <button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}" ${canRevoke ? '' : 'disabled'}>Revoke</button>
+            ${canRetry ? `<button class="btn btn-sm btn-secondary retry-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}" data-challenge="${cert.challenge_type}">Retry</button>` : ''}
+            ${isRevoked ? `<button class="btn btn-sm btn-secondary reissue-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}" data-challenge="${cert.challenge_type}">Reissue</button>` : ''}
+            ${canRevoke ? `<button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}">Revoke</button>` : ''}
+            ${canRemove ? `<button class="btn btn-sm ${isRevoked || !canRevoke ? 'btn-danger' : 'btn-muted'} remove-btn" data-id="${cert.id}" title="Remove from tracking${canRevoke ? ' without revoking' : ''}">Remove</button>` : ''}
           </td>
         `;
         tbody.appendChild(tr);
@@ -271,11 +283,53 @@
 
       $$('.revoke-btn', tbody).forEach((btn) => {
         btn.addEventListener('click', async () => {
-          if (!confirm('Revoke and delete this certificate? This cannot be undone.')) return;
+          if (!confirm('Revoke this certificate? It will be marked as revoked but kept in the list.')) return;
           btn.disabled = true;
           try {
-            await api('DELETE', `/api/certs/${btn.dataset.id}`);
+            await api('DELETE', `/api/certs/${btn.dataset.id}?action=revoke`);
             toast('Certificate revoked', 'success');
+            loadCertificates();
+          } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+        });
+      });
+
+      $$('.retry-btn', tbody).forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Retry issuing this certificate?')) return;
+          btn.disabled = true;
+          try {
+            const domains = JSON.parse(decodeURIComponent(btn.dataset.domains));
+            const challengeType = btn.dataset.challenge;
+            // Remove the errored entry first, then re-request
+            await api('DELETE', `/api/certs/${btn.dataset.id}?action=remove`);
+            await api('POST', '/api/certs', { domains, challengeType });
+            toast('Retry started — processing in background…', 'info');
+            loadCertificates();
+          } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+        });
+      });
+
+      $$('.reissue-btn', tbody).forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Reissue a new certificate for these domains?')) return;
+          btn.disabled = true;
+          try {
+            const domains = JSON.parse(decodeURIComponent(btn.dataset.domains));
+            const challengeType = btn.dataset.challenge;
+            await api('POST', '/api/certs', { domains, challengeType, overrideRevoked: true });
+            toast('Reissue started — processing in background…', 'info');
+            loadCertificates();
+          } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+        });
+      });
+
+      $$('.remove-btn', tbody).forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Remove this certificate from tracking? The certificate will not be revoked.')) return;
+          btn.disabled = true;
+          try {
+            await api('DELETE', `/api/certs/${btn.dataset.id}?action=remove`);
+            toast('Certificate removed from tracking', 'success');
             loadCertificates();
           } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
         });
@@ -338,9 +392,25 @@
         toast('Certificate request submitted — issuing in background…', 'info');
         navigate('certificates'); // navigate to cert list which will poll
       } catch (err) {
-        errorEl.textContent = err.message;
-        show(errorEl);
-        toast(err.message, 'error');
+        // If a revoked cert exists, offer to override
+        if (err.revoked) {
+          if (confirm('A revoked certificate exists for these domains. Replace it with a new one?')) {
+            try {
+              await api('POST', '/api/certs', { domains, challengeType, overrideRevoked: true });
+              form.reset();
+              toast('Certificate request submitted — issuing in background…', 'info');
+              navigate('certificates');
+            } catch (err2) {
+              errorEl.textContent = err2.message;
+              show(errorEl);
+              toast(err2.message, 'error');
+            }
+          }
+        } else {
+          errorEl.textContent = err.message;
+          show(errorEl);
+          toast(err.message, 'error');
+        }
       }
 
       submitBtn.disabled = false;
@@ -385,9 +455,11 @@
       $('#st-port').textContent = srv.port || '—';
 
       const tlsSource = data.tls?.source || 'self-signed';
-      $('#st-tls').innerHTML = tlsSource === 'custom'
-        ? '<span class="badge badge-active">Custom / Managed</span>'
-        : '<span class="badge badge-pending">Self-signed</span>';
+      $('#st-tls').innerHTML = data.tls?.httpMode
+        ? '<span class="badge badge-expired">Disabled (HTTP mode)</span>'
+        : tlsSource === 'custom'
+          ? '<span class="badge badge-active">Custom / Managed</span>'
+          : '<span class="badge badge-pending">Self-signed</span>';
 
       $('#st-staging').innerHTML = data.staging
         ? '<span class="badge badge-pending">Yes</span>'
@@ -502,14 +574,24 @@
 
       // ---- TLS pane ----
       const tlsStatusEl = $('#tls-status');
-      if (tlsSource === 'custom') {
+      const tlsHttpMode = data.tls?.httpMode;
+      if (tlsHttpMode) {
+        tlsStatusEl.innerHTML = '<span class="badge badge-expired">Disabled</span> <span style="color:var(--text-muted);font-size:.85rem">TLS is disabled (USE_HTTP=true) — the server is running plain HTTP</span>';
+        // Disable all TLS controls
+        const tlsPane = $('#pane-tls');
+        tlsPane.querySelectorAll('select, button, textarea').forEach(el => { el.disabled = true; });
+        hide($('#tls-managed-section'));
+        hide($('#tls-custom-section'));
+      } else if (tlsSource === 'custom') {
         tlsStatusEl.innerHTML = '<span class="badge badge-active">Custom</span> <span style="color:var(--text-muted);font-size:.85rem">Using a custom or managed certificate</span>';
       } else {
         tlsStatusEl.innerHTML = '<span class="badge badge-pending">Self-signed</span> <span style="color:var(--text-muted);font-size:.85rem">Auto-generated certificate (browser warning expected)</span>';
       }
       const tlsModeSelect = $('#tls-mode');
-      tlsModeSelect.value = tlsSource === 'custom' ? 'custom' : 'self-signed';
-      updateTlsSections();
+      if (!tlsHttpMode) {
+        tlsModeSelect.value = tlsSource === 'custom' ? 'custom' : 'self-signed';
+        updateTlsSections();
+      }
 
       // ---- Schedule pane ----
       const schedStatusEl = $('#sched-status');

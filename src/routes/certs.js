@@ -1,4 +1,5 @@
 const express = require('express');
+const config = require('../config');
 const { getDb } = require('../db');
 const logger = require('../logger');
 const certbot = require('../services/certbot');
@@ -49,10 +50,41 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Wildcard domains require dns-01 challenge type' });
     }
 
+    // Check for existing certificate with the same domains
     const domainStr = domains.join(' ');
+    const existing = db.get(
+      "SELECT id, status FROM certificates WHERE domains = ? AND status NOT IN ('error', 'revoked')",
+      [domainStr],
+    );
+    if (existing) {
+      return res.status(409).json({
+        error: `A certificate for these domains already exists (id: ${existing.id}, status: ${existing.status}). Use renew instead.`,
+      });
+    }
+
+    // Allow overriding a revoked entry — remove it first so the new one takes its place
+    const revoked = db.get(
+      "SELECT id FROM certificates WHERE domains = ? AND status = 'revoked'",
+      [domainStr],
+    );
+    if (revoked) {
+      if (req.body.overrideRevoked) {
+        db.run('DELETE FROM certificates WHERE id = ?', [revoked.id]);
+        logger.info('Removed revoked certificate entry for override', { id: revoked.id, domains });
+      } else {
+        return res.status(409).json({
+          error: 'A revoked certificate exists for these domains.',
+          revoked: true,
+          revokedId: revoked.id,
+        });
+      }
+    }
+
+    const certbotName = domains[0]; // certbot uses the first domain as the cert name
+    const isStaging = config.letsencrypt.staging ? 1 : 0;
     const { lastInsertRowid } = db.run(
-      "INSERT INTO certificates (domains, challenge_type, status) VALUES (?, ?, 'issuing')",
-      [domainStr, challengeType],
+      "INSERT INTO certificates (domains, challenge_type, status, certbot_name, staging) VALUES (?, ?, 'issuing', ?, ?)",
+      [domainStr, challengeType, certbotName, isStaging],
     );
 
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
@@ -68,6 +100,14 @@ router.post('/', async (req, res) => {
     certbot.issueCertificate({ domains, challengeType }).then(async (result) => {
       if (result.success) {
         await certbot.syncCertificates();
+        // Safety net: ensure this specific row is updated even if sync matched differently
+        const row = db.get('SELECT status FROM certificates WHERE id = ?', [lastInsertRowid]);
+        if (row && row.status === 'issuing') {
+          db.run(
+            "UPDATE certificates SET status = 'active', issued_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+            [lastInsertRowid],
+          );
+        }
         logger.info('Background cert issue succeeded', { id: lastInsertRowid, domains });
       } else {
         const errPayload = JSON.stringify(result.error || { title: 'Unknown error', detail: result.message, link: '' });
@@ -148,7 +188,10 @@ router.post('/:id/renew', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/certs/:id — revoke and delete a certificate
+// DELETE /api/certs/:id — revoke, remove tracking, or both
+//   ?action=remove  → remove from DB only (no certbot revoke)
+//   ?action=revoke  → revoke via certbot, keep row with 'revoked' status
+//   default (no action) → revoke via certbot, then remove from DB
 // ---------------------------------------------------------------------------
 router.delete('/:id', async (req, res) => {
   try {
@@ -156,21 +199,43 @@ router.delete('/:id', async (req, res) => {
     const cert = db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
     if (!cert) return res.status(404).json({ error: 'Not found' });
 
-    if (cert.certbot_name) {
+    const action = req.query.action; // 'remove' | 'revoke' | undefined
+
+    // Revoke via certbot (for 'revoke' action or default)
+    if (action !== 'remove' && cert.certbot_name) {
       const result = await certbot.revokeCertificate(cert.certbot_name);
       if (!result.success) {
         return res.status(500).json({ error: result.message });
       }
     }
 
-    db.run('DELETE FROM certificates WHERE id = ?', [cert.id]);
+    // Delete cert files from disk (for 'remove' action — cert was not revoked above)
+    if (action === 'remove' && cert.certbot_name) {
+      const result = await certbot.deleteCertificate(cert.certbot_name);
+      if (!result.success) {
+        logger.warn('Failed to delete cert from disk during remove', { id: cert.id, message: result.message });
+      }
+    }
+
+    if (action === 'revoke') {
+      // Keep the row but mark as revoked
+      db.run(
+        "UPDATE certificates SET status = 'revoked', error_message = NULL, updated_at = datetime('now') WHERE id = ?",
+        [cert.id],
+      );
+    } else {
+      // Remove from DB ('remove' action or default)
+      db.run('DELETE FROM certificates WHERE id = ?', [cert.id]);
+    }
+
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-      'cert_revoke', JSON.stringify({ id: cert.id, domains: cert.domains }),
+      action === 'remove' ? 'cert_remove' : 'cert_revoke',
+      JSON.stringify({ id: cert.id, domains: cert.domains }),
     ]);
 
     return res.json({ ok: true });
   } catch (err) {
-    logger.error('Certificate revoke error', { err });
+    logger.error('Certificate delete error', { err });
     return res.status(500).json({ error: err.message });
   }
 });

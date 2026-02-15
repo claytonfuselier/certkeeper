@@ -176,6 +176,22 @@ async function initDatabase() {
     logger.error('Certificate table migration failed', { err: migErr.message });
   }
 
+  // Add 'staging' column to certificates if missing
+  try {
+    const tableInfo = _db._db.exec(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='certificates'"
+    );
+    const ddl = tableInfo.length > 0 && tableInfo[0].values.length > 0
+      ? tableInfo[0].values[0][0]
+      : '';
+    if (ddl && !ddl.includes('staging')) {
+      logger.info('Adding staging column to certificates table');
+      _db.exec("ALTER TABLE certificates ADD COLUMN staging INTEGER NOT NULL DEFAULT 0");
+    }
+  } catch (migErr) {
+    logger.error('Staging column migration failed', { err: migErr.message });
+  }
+
   _db.save();
   logger.info('Database initialized', { path: config.paths.db });
 

@@ -4,6 +4,7 @@ const config = require('../config');
 const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { validateCloudflareToken } = require('../services/cloudflare');
+const { ensureCloudflareIni, deleteCloudflareIni } = require('../services/certbot');
 const { getTlsSource, installCustomCert, removeCustomCert, readManagedCert, setServiceDomain } = require('../services/tls');
 const scheduler = require('../services/scheduler');
 
@@ -48,7 +49,8 @@ router.get('/', (_req, res) => {
       source: envEmail ? 'env' : dbEmail ? 'database' : 'none',
     },
     tls: {
-      source: getTlsSource(), // 'self-signed' or 'custom'
+      source: config.useHttp ? 'disabled' : getTlsSource(),
+      httpMode: config.useHttp,
     },
     schedule: scheduler.getScheduleInfo(),
     staging: config.letsencrypt.staging,
@@ -79,6 +81,7 @@ router.put('/cloudflare', async (req, res) => {
   if (apiToken.trim() === '') {
     // Clear the token
     db.run("DELETE FROM settings WHERE key = 'cloudflare_api_token'");
+    deleteCloudflareIni();
     logger.info('Cloudflare API token removed from database');
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", ['cf_token_removed', 'Token cleared']);
   } else {
@@ -95,6 +98,7 @@ router.put('/cloudflare', async (req, res) => {
       db.run("INSERT INTO settings (key, value) VALUES ('cloudflare_api_token', ?)", [apiToken.trim()]);
     }
     logger.info('Cloudflare API token saved to database (validated)');
+    ensureCloudflareIni();
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", ['cf_token_updated', 'Token updated via UI (validated)']);
   }
 
@@ -160,6 +164,10 @@ router.put('/email', (req, res) => {
 // PUT /api/settings/tls — upload a custom cert + key, or use a managed cert
 // ---------------------------------------------------------------------------
 router.put('/tls', (req, res) => {
+  if (config.useHttp) {
+    return res.status(400).json({ error: 'TLS settings are disabled when USE_HTTP=true. The server is running in plain HTTP mode.' });
+  }
+
   const { certPem, keyPem, managedDomain, action } = req.body || {};
 
   // Revert to self-signed
@@ -263,6 +271,10 @@ router.put('/schedule', (req, res) => {
 // GET /api/settings/tls/managed — list active managed certs available for use
 // ---------------------------------------------------------------------------
 router.get('/tls/managed', (_req, res) => {
+  if (config.useHttp) {
+    return res.status(400).json({ error: 'TLS settings are disabled when USE_HTTP=true.' });
+  }
+
   const db = getDb();
   const certs = db.all("SELECT id, domains, status FROM certificates WHERE status = 'active' ORDER BY domains");
   res.json(certs.map((c) => ({

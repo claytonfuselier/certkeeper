@@ -178,6 +178,20 @@ function ensureCloudflareIni() {
 }
 
 /**
+ * Delete the Cloudflare credentials INI file from disk.
+ */
+function deleteCloudflareIni() {
+  try {
+    fs.unlinkSync(config.paths.cloudflareIni);
+    logger.info('Deleted cloudflare.ini from disk');
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      logger.warn('Failed to delete cloudflare.ini', { err: err.message });
+    }
+  }
+}
+
+/**
  * Parse "certbot certificates" output to structured data.
  */
 function parseCertbotCertificates(stdout) {
@@ -188,14 +202,18 @@ function parseCertbotCertificates(stdout) {
     const nameMatch = block.match(/Certificate Name:\s*(.+)/);
     const domainsMatch = block.match(/Domains:\s*(.+)/);
     const expiryMatch = block.match(/Expiry Date:\s*([^\(]+)/);
-    const validMatch = block.match(/VALID:\s*(\d+)\s*day/i) || block.match(/INVALID/i);
+    const validMatch = block.match(/VALID:\s*(\d+)\s*day/i) || block.match(/INVALID[:\s]*([\w_]*)/i);
 
     if (nameMatch) {
+      const isInvalid = validMatch && validMatch[0].includes('INVALID');
+      const isTestCert = isInvalid && /TEST_CERT/.test(validMatch[0]);
+
       certs.push({
         certbotName: nameMatch[1].trim(),
         domains: domainsMatch ? domainsMatch[1].trim().split(/\s+/) : [],
         expiresAt: expiryMatch ? expiryMatch[1].trim() : null,
-        valid: validMatch && !validMatch[0].includes('INVALID'),
+        valid: validMatch && !isInvalid,
+        staging: isTestCert,
       });
     }
   }
@@ -328,7 +346,9 @@ async function listCertbotCertificates() {
     return [];
   }
 
-  return parseCertbotCertificates(stdout);
+  // certbot may output certificate info to stderr instead of stdout
+  const output = stdout || stderr || '';
+  return parseCertbotCertificates(output);
 }
 
 /**
@@ -346,18 +366,36 @@ async function syncCertificates() {
 
     if (existing) {
       db.run(`
-        UPDATE certificates SET domains = ?, status = ?, expires_at = ?, updated_at = datetime('now')
+        UPDATE certificates SET domains = ?, status = ?, expires_at = ?, staging = ?, updated_at = datetime('now')
         WHERE id = ?
-      `, [domains, status, expiresAt, existing.id]);
+      `, [domains, status, expiresAt, cert.staging ? 1 : 0, existing.id]);
     } else {
       db.run(`
-        INSERT INTO certificates (domains, challenge_type, status, expires_at, certbot_name, issued_at)
-        VALUES (?, 'http-01', ?, ?, ?, datetime('now'))
-      `, [domains, status, expiresAt, cert.certbotName]);
+        INSERT INTO certificates (domains, challenge_type, status, expires_at, certbot_name, staging, issued_at)
+        VALUES (?, 'http-01', ?, ?, ?, ?, datetime('now'))
+      `, [domains, status, expiresAt, cert.certbotName, cert.staging ? 1 : 0]);
     }
   }
 
   logger.info('Certificate sync complete', { count: onDisk.length });
+}
+
+/**
+ * Delete a certificate from disk by certbot name (no revocation).
+ */
+async function deleteCertificate(certName) {
+  const args = ['delete', ...baseArgs(), '--cert-name', certName];
+
+  logger.info('Deleting certificate from disk', { certName });
+  const { code, stdout, stderr } = await run('certbot', args);
+
+  if (code !== 0) {
+    const msg = stderr || stdout || 'certbot delete failed';
+    logger.error('certbot delete failed', { code, msg });
+    return { success: false, message: msg };
+  }
+
+  return { success: true, message: 'Certificate deleted from disk' };
 }
 
 module.exports = {
@@ -365,7 +403,10 @@ module.exports = {
   renewCertificate,
   renewAll,
   revokeCertificate,
+  deleteCertificate,
   listCertbotCertificates,
   syncCertificates,
   getCloudflareToken,
+  ensureCloudflareIni,
+  deleteCloudflareIni,
 };

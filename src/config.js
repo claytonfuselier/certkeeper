@@ -113,7 +113,7 @@ module.exports = {
   paths: {
     data: dataDir,
     logs: process.env.LOG_DIR || path.join(__dirname, '..', 'logs'),
-    db: path.join(dataDir, 'certs.db'),
+    db: path.join(dataDir, 'certkeeper.db'),
     certbotConfig: process.env.CERTBOT_CONFIG_DIR || '/etc/letsencrypt',
     certbotWork: process.env.CERTBOT_WORK_DIR || '/var/lib/letsencrypt',
     get certbotLogs() { return this.logs; },

@@ -104,6 +104,26 @@ app.get(/^\/(?!api).*/, (req, res) => {
 // Start
 // ---------------------------------------------------------------------------
 async function start() {
+  const banner = [
+    '   ____          _   _  __',
+    '  / ___|___ _ __| |_| |/ /___  ___ _ __   ___ _ __',
+    ' | |   / _ \\ \'__| __| \' // _ \\/ _ \\ \'_ \\ / _ \\ \'__|',
+    ' | |__|  __/ |  | |_| . \\  __/  __/ |_) |  __/ |',
+    '  \\____\\___|_|   \\__|_|\\_\\___|\\___| .__/ \\___|_|',
+    '                                  |_|',
+  ].join('\n');
+
+  console.log('\n' + banner + '\n');
+  logger.info('CertKeeper starting');
+
+  // Require root (certbot needs write access to /etc/letsencrypt and may bind port 80)
+  if (process.getuid && process.getuid() !== 0) {
+    console.error('\n✖  CertKeeper must be run as root.');
+    console.error('   certbot requires write access to certificate directories and may need to bind port 80.\n');
+    console.error('   Run with:  sudo node src/index.js\n');
+    process.exit(1);
+  }
+
   await initDatabase();
   await ensureAdminUser();
   await validateEnvCloudflareToken();

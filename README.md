@@ -46,8 +46,10 @@ npm install
 ### 2a. Run natively
 
 ```bash
-npm start
+sudo npm start
 ```
+
+> **Root is required.** certbot needs write access to `/etc/letsencrypt` and may need to bind port 80 for HTTP-01 challenges. The app will exit with an error if not run as root.
 
 Open `https://localhost:3000` — you'll be guided through initial setup (admin account, registration email, etc.).
 
