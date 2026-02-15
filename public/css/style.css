@@ -230,6 +230,7 @@ a:hover { text-decoration: underline; }
 input[type="text"],
 input[type="password"],
 input[type="email"],
+input[type="url"],
 select {
   width: 100%;
   padding: .6rem .75rem;
@@ -308,6 +309,32 @@ input[type="time"] {
 }
 input[type="time"]:focus { border-color: var(--primary); }
 
+/* ---- Schedule grid (fieldsets side-by-side) ---- */
+.sched-grid {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.sched-grid legend {
+  font-weight: 600;
+  font-size: .9rem;
+  color: var(--text-muted);
+  padding: 0 .4rem;
+}
+@media (min-width: 600px) {
+  .card:has(.sched-grid) form {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  .card:has(.sched-grid) form .error-msg,
+  .card:has(.sched-grid) form .success-msg,
+  .card:has(.sched-grid) form button {
+    grid-column: 1 / -1;
+  }
+}
+
 /* ---- Settings Tabs ---- */
 .settings-tabs {
   display: flex;
@@ -338,6 +365,34 @@ input[type="time"]:focus { border-color: var(--primary); }
 }
 .settings-pane { display: none; }
 .settings-pane.active { display: block; }
+
+/* ---- Notification event checkboxes ---- */
+.notif-events-group { margin-bottom: 1rem; }
+.notif-events-group > label { display: block; margin-bottom: .5rem; font-weight: 500; font-size: .9rem; }
+.notif-events-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: .35rem .75rem;
+}
+.notif-event-option {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.notif-event-option input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+.notif-form-actions {
+  display: flex;
+  gap: .5rem;
+  margin-top: .75rem;
+}
 
 /* ---- Status info list ---- */
 .status-grid {

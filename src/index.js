@@ -18,6 +18,7 @@ const { getTlsCredentials } = require('./services/tls');
 const authRoutes = require('./routes/auth');
 const certsRoutes = require('./routes/certs');
 const dashboardRoutes = require('./routes/dashboard');
+const notificationsRoutes = require('./routes/notifications');
 const settingsRoutes = require('./routes/settings');
 const { requireAuth } = require('./middleware/auth');
 
@@ -90,6 +91,7 @@ app.use(session({
 app.use('/api/auth', authRoutes);
 app.use('/api/certs', certsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/notifications', notificationsRoutes);
 app.use('/api/settings', settingsRoutes);
 
 // --- Frontend (static files) ---
