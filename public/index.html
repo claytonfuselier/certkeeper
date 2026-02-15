@@ -73,6 +73,7 @@
           <li><a href="#" data-page="certificates" class="nav-link">📜 Certificates</a></li>
           <li><a href="#" data-page="new-cert" class="nav-link">➕ New Certificate</a></li>
           <li><a href="#" data-page="agents" class="nav-link">🤖 Agents</a></li>
+          <li><a href="#" data-page="notifications" class="nav-link">🔔 Notifications</a></li>
           <li><a href="#" data-page="settings" class="nav-link">⚙️ Settings</a></li>
         </ul>
         <div class="sidebar-footer">
@@ -265,13 +266,319 @@
           </div>
         </div>
 
+        <!-- Notifications Page -->
+        <div id="page-notifications" class="page hidden">
+          <h2>Notifications</h2>
+          <p class="setting-hint">Get notified about certificate events — issuance, renewal, expiry warnings, and errors.</p>
+          <div class="settings-tabs" id="notif-tabs">
+            <button class="settings-tab active" data-notif-tab="email">Email</button>
+            <button class="settings-tab" data-notif-tab="webhook">Webhook</button>
+            <button class="settings-tab" data-notif-tab="pushover">Pushover</button>
+            <button class="settings-tab" data-notif-tab="gotify">Gotify</button>
+            <button class="settings-tab" data-notif-tab="slack">Slack</button>
+            <button class="settings-tab" data-notif-tab="discord">Discord</button>
+            <button class="settings-tab" data-notif-tab="telegram">Telegram</button>
+          </div>
+
+          <!-- Email Notifications Pane -->
+          <div id="notif-email" class="settings-pane active">
+            <div class="card">
+              <h3>Email Notifications</h3>
+              <p class="setting-hint">Receive certificate event notifications via email. Uses the registration email by default.</p>
+              <form id="notif-email-form">
+                <div class="form-group">
+                  <label for="notif-email-enabled">Enable Email Notifications</label>
+                  <label class="toggle">
+                    <input type="checkbox" id="notif-email-enabled" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label for="notif-email-to">Recipient Address</label>
+                  <input type="email" id="notif-email-to" placeholder="you@example.com" autocomplete="email" />
+                  <small>Leave blank to use the Let's Encrypt registration email.</small>
+                </div>
+                <div class="notif-events-group">
+                  <label>Events</label>
+                  <div class="notif-events-grid">
+                    <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="issued" checked /> Certificate Issued</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="renewed" checked /> Certificate Renewed</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="expiry_warning" checked /> Expiry Warning</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="error" checked /> Errors</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="revoked" /> Revoked</label>
+                  </div>
+                </div>
+                <div id="notif-email-error" class="error-msg hidden"></div>
+                <div id="notif-email-success" class="success-msg hidden"></div>
+                <div class="notif-form-actions">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                  <button type="button" class="btn btn-secondary" id="notif-email-test-btn">Send Test</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Webhook Notifications Pane -->
+          <div id="notif-webhook" class="settings-pane">
+            <div class="card">
+              <h3>Webhook Notifications</h3>
+              <p class="setting-hint">Send a JSON payload to a URL when certificate events occur. Compatible with Slack, Discord, and custom endpoints.</p>
+              <form id="notif-webhook-form">
+                <div class="form-group">
+                  <label for="notif-webhook-enabled">Enable Webhook Notifications</label>
+                  <label class="toggle">
+                    <input type="checkbox" id="notif-webhook-enabled" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label for="notif-webhook-url">Webhook URL</label>
+                  <input type="url" id="notif-webhook-url" placeholder="https://hooks.slack.com/services/..." />
+                </div>
+                <div class="form-group">
+                  <label for="notif-webhook-secret">Secret (optional)</label>
+                  <input type="password" id="notif-webhook-secret" placeholder="HMAC signing secret" autocomplete="off" />
+                  <small>If provided, payloads will include an <code>X-Signature</code> header for verification.</small>
+                </div>
+                <div class="notif-events-group">
+                  <label>Events</label>
+                  <div class="notif-events-grid">
+                    <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="issued" checked /> Certificate Issued</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="renewed" checked /> Certificate Renewed</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="expiry_warning" checked /> Expiry Warning</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="error" checked /> Errors</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="revoked" /> Revoked</label>
+                  </div>
+                </div>
+                <div id="notif-webhook-error" class="error-msg hidden"></div>
+                <div id="notif-webhook-success" class="success-msg hidden"></div>
+                <div class="notif-form-actions">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                  <button type="button" class="btn btn-secondary" id="notif-webhook-test-btn">Send Test</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Pushover Notifications Pane -->
+          <div id="notif-pushover" class="settings-pane">
+            <div class="card">
+              <h3>Pushover Notifications</h3>
+              <p class="setting-hint">Push notifications to your phone via <a href="https://pushover.net" target="_blank" rel="noopener">Pushover</a>.</p>
+              <form id="notif-pushover-form">
+                <div class="form-group">
+                  <label for="notif-pushover-enabled">Enable Pushover Notifications</label>
+                  <label class="toggle">
+                    <input type="checkbox" id="notif-pushover-enabled" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label for="notif-pushover-user">User Key</label>
+                  <input type="text" id="notif-pushover-user" placeholder="Your Pushover user key" autocomplete="off" />
+                </div>
+                <div class="form-group">
+                  <label for="notif-pushover-token">Application Token</label>
+                  <input type="password" id="notif-pushover-token" placeholder="Pushover application API token" autocomplete="off" />
+                </div>
+                <div class="notif-events-group">
+                  <label>Events</label>
+                  <div class="notif-events-grid">
+                    <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="issued" checked /> Certificate Issued</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="renewed" checked /> Certificate Renewed</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="expiry_warning" checked /> Expiry Warning</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="error" checked /> Errors</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="revoked" /> Revoked</label>
+                  </div>
+                </div>
+                <div id="notif-pushover-error" class="error-msg hidden"></div>
+                <div id="notif-pushover-success" class="success-msg hidden"></div>
+                <div class="notif-form-actions">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                  <button type="button" class="btn btn-secondary" id="notif-pushover-test-btn">Send Test</button>
+                </div>
+              </form>
+            </div>
+          </div>
+          <!-- Gotify Notifications Pane -->
+          <div id="notif-gotify" class="settings-pane">
+            <div class="card">
+              <h3>Gotify Notifications</h3>
+              <p class="setting-hint">Push notifications via <a href="https://gotify.net" target="_blank" rel="noopener">Gotify</a> — a self-hosted push notification server.</p>
+              <form id="notif-gotify-form">
+                <div class="form-group">
+                  <label for="notif-gotify-enabled">Enable Gotify Notifications</label>
+                  <label class="toggle">
+                    <input type="checkbox" id="notif-gotify-enabled" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label for="notif-gotify-url">Server URL</label>
+                  <input type="url" id="notif-gotify-url" placeholder="https://gotify.example.com" />
+                  <small>Base URL of your Gotify server (no trailing slash).</small>
+                </div>
+                <div class="form-group">
+                  <label for="notif-gotify-token">Application Token</label>
+                  <input type="password" id="notif-gotify-token" placeholder="Gotify app token" autocomplete="off" />
+                </div>
+                <div class="form-group">
+                  <label for="notif-gotify-priority">Priority</label>
+                  <select id="notif-gotify-priority">
+                    <option value="2">Low (2)</option>
+                    <option value="5" selected>Normal (5)</option>
+                    <option value="8">High (8)</option>
+                  </select>
+                </div>
+                <div class="notif-events-group">
+                  <label>Events</label>
+                  <div class="notif-events-grid">
+                    <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="issued" checked /> Certificate Issued</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="renewed" checked /> Certificate Renewed</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="expiry_warning" checked /> Expiry Warning</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="error" checked /> Errors</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="revoked" /> Revoked</label>
+                  </div>
+                </div>
+                <div id="notif-gotify-error" class="error-msg hidden"></div>
+                <div id="notif-gotify-success" class="success-msg hidden"></div>
+                <div class="notif-form-actions">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                  <button type="button" class="btn btn-secondary" id="notif-gotify-test-btn">Send Test</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Slack Notifications Pane -->
+          <div id="notif-slack" class="settings-pane">
+            <div class="card">
+              <h3>Slack Notifications</h3>
+              <p class="setting-hint">Post certificate events to a Slack channel using an <a href="https://api.slack.com/messaging/webhooks" target="_blank" rel="noopener">Incoming Webhook</a>.</p>
+              <form id="notif-slack-form">
+                <div class="form-group">
+                  <label for="notif-slack-enabled">Enable Slack Notifications</label>
+                  <label class="toggle">
+                    <input type="checkbox" id="notif-slack-enabled" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label for="notif-slack-webhook">Webhook URL</label>
+                  <input type="url" id="notif-slack-webhook" placeholder="https://hooks.slack.com/services/T.../B.../xxx" />
+                </div>
+                <div class="form-group">
+                  <label for="notif-slack-channel">Channel (optional)</label>
+                  <input type="text" id="notif-slack-channel" placeholder="#certificates" />
+                  <small>Override the default channel configured in Slack.</small>
+                </div>
+                <div class="notif-events-group">
+                  <label>Events</label>
+                  <div class="notif-events-grid">
+                    <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="issued" checked /> Certificate Issued</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="renewed" checked /> Certificate Renewed</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="expiry_warning" checked /> Expiry Warning</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="error" checked /> Errors</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="revoked" /> Revoked</label>
+                  </div>
+                </div>
+                <div id="notif-slack-error" class="error-msg hidden"></div>
+                <div id="notif-slack-success" class="success-msg hidden"></div>
+                <div class="notif-form-actions">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                  <button type="button" class="btn btn-secondary" id="notif-slack-test-btn">Send Test</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Discord Notifications Pane -->
+          <div id="notif-discord" class="settings-pane">
+            <div class="card">
+              <h3>Discord Notifications</h3>
+              <p class="setting-hint">Post certificate events to a Discord channel using a <a href="https://discord.com/developers/docs/resources/webhook" target="_blank" rel="noopener">Webhook</a>.</p>
+              <form id="notif-discord-form">
+                <div class="form-group">
+                  <label for="notif-discord-enabled">Enable Discord Notifications</label>
+                  <label class="toggle">
+                    <input type="checkbox" id="notif-discord-enabled" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label for="notif-discord-webhook">Webhook URL</label>
+                  <input type="url" id="notif-discord-webhook" placeholder="https://discord.com/api/webhooks/..." />
+                </div>
+                <div class="notif-events-group">
+                  <label>Events</label>
+                  <div class="notif-events-grid">
+                    <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="issued" checked /> Certificate Issued</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="renewed" checked /> Certificate Renewed</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="expiry_warning" checked /> Expiry Warning</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="error" checked /> Errors</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="revoked" /> Revoked</label>
+                  </div>
+                </div>
+                <div id="notif-discord-error" class="error-msg hidden"></div>
+                <div id="notif-discord-success" class="success-msg hidden"></div>
+                <div class="notif-form-actions">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                  <button type="button" class="btn btn-secondary" id="notif-discord-test-btn">Send Test</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Telegram Notifications Pane -->
+          <div id="notif-telegram" class="settings-pane">
+            <div class="card">
+              <h3>Telegram Notifications</h3>
+              <p class="setting-hint">Send certificate events to a Telegram chat via the <a href="https://core.telegram.org/bots/api" target="_blank" rel="noopener">Bot API</a>.</p>
+              <form id="notif-telegram-form">
+                <div class="form-group">
+                  <label for="notif-telegram-enabled">Enable Telegram Notifications</label>
+                  <label class="toggle">
+                    <input type="checkbox" id="notif-telegram-enabled" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label for="notif-telegram-bot-token">Bot Token</label>
+                  <input type="password" id="notif-telegram-bot-token" placeholder="123456:ABC-DEF..." autocomplete="off" />
+                  <small>From <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>.</small>
+                </div>
+                <div class="form-group">
+                  <label for="notif-telegram-chat-id">Chat ID</label>
+                  <input type="text" id="notif-telegram-chat-id" placeholder="-1001234567890" />
+                  <small>User, group, or channel chat ID. Use <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a> to find yours.</small>
+                </div>
+                <div class="notif-events-group">
+                  <label>Events</label>
+                  <div class="notif-events-grid">
+                    <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="issued" checked /> Certificate Issued</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="renewed" checked /> Certificate Renewed</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="expiry_warning" checked /> Expiry Warning</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="error" checked /> Errors</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="revoked" /> Revoked</label>
+                  </div>
+                </div>
+                <div id="notif-telegram-error" class="error-msg hidden"></div>
+                <div id="notif-telegram-success" class="success-msg hidden"></div>
+                <div class="notif-form-actions">
+                  <button type="submit" class="btn btn-primary">Save</button>
+                  <button type="button" class="btn btn-secondary" id="notif-telegram-test-btn">Send Test</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
         <!-- Settings Page -->
         <div id="page-settings" class="page hidden">
           <h2>Settings</h2>
           <div class="settings-tabs">
             <button class="settings-tab active" data-settings-tab="status">Status</button>
-            <button class="settings-tab" data-settings-tab="email">Registration Email</button>
-            <button class="settings-tab" data-settings-tab="schedule">Renew Schedule</button>
+            <button class="settings-tab" data-settings-tab="letsencrypt">Let's Encrypt</button>
             <button class="settings-tab" data-settings-tab="cloudflare">Cloudflare API</button>
             <button class="settings-tab" data-settings-tab="tls">TLS</button>
             <button class="settings-tab" data-settings-tab="password">Change Password</button>
@@ -363,8 +670,9 @@
             </div>
           </div>
 
-          <!-- Email Pane -->
-          <div id="settings-email" class="settings-pane">
+          <!-- Let's Encrypt Pane -->
+          <div id="settings-letsencrypt" class="settings-pane">
+            <!-- Registration Email Card -->
             <div class="card">
               <h3>Registration Email</h3>
               <p class="setting-hint">Used for Let's Encrypt account registration and expiry notifications.</p>
@@ -381,6 +689,59 @@
                 <div id="email-error" class="error-msg hidden"></div>
                 <div id="email-success" class="success-msg hidden"></div>
                 <button type="submit" class="btn btn-primary">Save Email</button>
+              </form>
+            </div>
+
+            <!-- Renewal Schedule Card -->
+            <div class="card">
+              <h3>Renewal Schedule</h3>
+              <p class="setting-hint">Certificates are automatically renewed on two days per week.</p>
+              <div id="sched-status" style="margin-bottom:.75rem"></div>
+              <div id="sched-env-notice" class="error-msg hidden" style="margin-bottom:.75rem">
+                🔒 Renewal schedule is managed via environment variable (RENEWAL_CRON). Changes are disabled.
+              </div>
+              <form id="schedule-form">
+                <fieldset class="sched-grid">
+                  <legend>Day 1</legend>
+                  <div class="form-group">
+                    <label for="sched-day1">Day of Week</label>
+                    <select id="sched-day1">
+                      <option value="0">Sunday</option>
+                      <option value="1">Monday</option>
+                      <option value="2">Tuesday</option>
+                      <option value="3">Wednesday</option>
+                      <option value="4">Thursday</option>
+                      <option value="5">Friday</option>
+                      <option value="6">Saturday</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="sched-time1">Time</label>
+                    <input type="time" id="sched-time1" value="02:30" />
+                  </div>
+                </fieldset>
+                <fieldset class="sched-grid">
+                  <legend>Day 2</legend>
+                  <div class="form-group">
+                    <label for="sched-day2">Day of Week</label>
+                    <select id="sched-day2">
+                      <option value="0">Sunday</option>
+                      <option value="1">Monday</option>
+                      <option value="2">Tuesday</option>
+                      <option value="3">Wednesday</option>
+                      <option value="4">Thursday</option>
+                      <option value="5">Friday</option>
+                      <option value="6">Saturday</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="sched-time2">Time</label>
+                    <input type="time" id="sched-time2" value="03:00" />
+                  </div>
+                </fieldset>
+                <div id="sched-error" class="error-msg hidden"></div>
+                <div id="sched-success" class="success-msg hidden"></div>
+                <button type="submit" class="btn btn-primary">Save Schedule</button>
               </form>
             </div>
           </div>
@@ -404,63 +765,6 @@
                 <div id="pw-error" class="error-msg hidden"></div>
                 <div id="pw-success" class="success-msg hidden"></div>
                 <button type="submit" class="btn btn-primary">Update Password</button>
-              </form>
-            </div>
-          </div>
-
-          <!-- Schedule Pane -->
-          <div id="settings-schedule" class="settings-pane">
-            <div class="card">
-              <h3>Renewal Schedule</h3>
-              <p class="setting-hint">Certbot checks for renewals twice per week. Certificates are only actually renewed when within 30 days of expiry.</p>
-              <div id="sched-status" style="margin-bottom:.75rem"></div>
-              <div id="sched-env-notice" class="error-msg hidden" style="margin-bottom:.75rem">
-                🔒 Renewal schedule is managed via the RENEWAL_CRON environment variable. Changes are disabled.
-              </div>
-              <form id="schedule-form">
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-                  <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:.75rem">
-                    <legend style="font-size:.85rem;font-weight:600;padding:0 .25rem">Check 1</legend>
-                    <div class="form-group">
-                      <label for="sched-day1">Day</label>
-                      <select id="sched-day1">
-                        <option value="0">Sunday</option>
-                        <option value="1">Monday</option>
-                        <option value="2">Tuesday</option>
-                        <option value="3">Wednesday</option>
-                        <option value="4">Thursday</option>
-                        <option value="5">Friday</option>
-                        <option value="6">Saturday</option>
-                      </select>
-                    </div>
-                    <div class="form-group">
-                      <label for="sched-time1">Time</label>
-                      <input type="time" id="sched-time1" value="03:00" />
-                    </div>
-                  </fieldset>
-                  <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:.75rem">
-                    <legend style="font-size:.85rem;font-weight:600;padding:0 .25rem">Check 2</legend>
-                    <div class="form-group">
-                      <label for="sched-day2">Day</label>
-                      <select id="sched-day2">
-                        <option value="0">Sunday</option>
-                        <option value="1">Monday</option>
-                        <option value="2">Tuesday</option>
-                        <option value="3">Wednesday</option>
-                        <option value="4">Thursday</option>
-                        <option value="5">Friday</option>
-                        <option value="6">Saturday</option>
-                      </select>
-                    </div>
-                    <div class="form-group">
-                      <label for="sched-time2">Time</label>
-                      <input type="time" id="sched-time2" value="03:00" />
-                    </div>
-                  </fieldset>
-                </div>
-                <div id="sched-error" class="error-msg hidden" style="margin-top:.75rem"></div>
-                <div id="sched-success" class="success-msg hidden" style="margin-top:.75rem"></div>
-                <button type="submit" class="btn btn-primary" style="margin-top:.75rem">Save Schedule</button>
               </form>
             </div>
           </div>

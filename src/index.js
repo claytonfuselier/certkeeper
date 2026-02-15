@@ -18,6 +18,7 @@ const { getTlsCredentials } = require('./services/tls');
 const authRoutes = require('./routes/auth');
 const certsRoutes = require('./routes/certs');
 const dashboardRoutes = require('./routes/dashboard');
+const notificationsRoutes = require('./routes/notifications');
 const settingsRoutes = require('./routes/settings');
 const agentsRoutes = require('./routes/agents');
 const agentApiRoutes = require('./routes/agent-api');
@@ -92,6 +93,7 @@ app.use(session({
 app.use('/api/auth', authRoutes);
 app.use('/api/certs', certsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/notifications', notificationsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/agents', agentsRoutes);
 app.use('/api/agent', agentApiRoutes);
