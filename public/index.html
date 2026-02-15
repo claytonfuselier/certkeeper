@@ -72,6 +72,7 @@
           <li><a href="#" data-page="dashboard" class="nav-link active">📊 Dashboard</a></li>
           <li><a href="#" data-page="certificates" class="nav-link">📜 Certificates</a></li>
           <li><a href="#" data-page="new-cert" class="nav-link">➕ New Certificate</a></li>
+          <li><a href="#" data-page="agents" class="nav-link">🤖 Agents</a></li>
           <li><a href="#" data-page="settings" class="nav-link">⚙️ Settings</a></li>
         </ul>
         <div class="sidebar-footer">
@@ -168,6 +169,99 @@
                 Request Certificate
               </button>
             </form>
+          </div>
+        </div>
+
+        <!-- Agents Page -->
+        <div id="page-agents" class="page hidden">
+          <div class="page-header">
+            <h2>Agents</h2>
+            <div class="page-actions">
+              <button id="new-agent-btn" class="btn btn-primary">➕ New Agent</button>
+            </div>
+          </div>
+
+          <!-- Agent list -->
+          <div class="card">
+            <table class="table" id="agents-table">
+              <thead>
+                <tr>
+                  <th style="width:2rem"></th>
+                  <th>Name</th>
+                  <th>Token</th>
+                  <th>Deployments</th>
+                  <th>Last Contact</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+            <div id="agents-empty" class="empty-state hidden">
+              <p>No agents configured. Create one to allow remote systems to pull certificates.</p>
+            </div>
+          </div>
+
+          <!-- Create / Edit Agent Modal -->
+          <div id="agent-modal" class="modal-overlay hidden">
+            <div class="modal-card">
+              <h3 id="agent-modal-title">New Agent</h3>
+              <form id="agent-form">
+                <input type="hidden" id="agent-edit-id" value="" />
+                <div class="form-group">
+                  <label for="agent-name">Agent Name</label>
+                  <input type="text" id="agent-name" placeholder="e.g. docker-host-01" required />
+                  <small>A friendly name to identify this agent.</small>
+                </div>
+                <div id="agent-form-error" class="error-msg hidden"></div>
+                <div class="modal-actions">
+                  <button type="button" class="btn btn-secondary" id="agent-modal-cancel">Cancel</button>
+                  <button type="submit" class="btn btn-primary" id="agent-modal-submit">Create Agent</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Add Deployment Modal -->
+          <div id="deployment-modal" class="modal-overlay hidden">
+            <div class="modal-card">
+              <h3 id="deployment-modal-title">Add Deployment</h3>
+              <form id="deployment-form">
+                <input type="hidden" id="deployment-agent-id" value="" />
+                <input type="hidden" id="deployment-edit-id" value="" />
+                <div class="form-group">
+                  <label for="deployment-name">Deployment Name</label>
+                  <input type="text" id="deployment-name" placeholder="e.g. nginx-proxy" required />
+                  <small>A name to identify this deployment on the agent.</small>
+                </div>
+                <div class="form-group">
+                  <label for="deployment-cert">Certificate</label>
+                  <select id="deployment-cert" required>
+                    <option value="">— Select a certificate —</option>
+                  </select>
+                </div>
+                <div id="deployment-form-error" class="error-msg hidden"></div>
+                <div class="modal-actions">
+                  <button type="button" class="btn btn-secondary" id="deployment-modal-cancel">Cancel</button>
+                  <button type="submit" class="btn btn-primary" id="deployment-modal-submit">Add</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Token display modal (shown once after creation / regeneration) -->
+          <div id="token-modal" class="modal-overlay hidden">
+            <div class="modal-card">
+              <h3>Agent Token</h3>
+              <p class="setting-hint" style="margin-bottom:.75rem">Copy this token now — it will not be shown again.</p>
+              <div class="token-display">
+                <code id="token-display-value"></code>
+                <button type="button" class="btn btn-sm btn-secondary" id="token-copy-btn">📋 Copy</button>
+              </div>
+              <div class="modal-actions" style="margin-top:1rem">
+                <button type="button" class="btn btn-primary" id="token-modal-close">Done</button>
+              </div>
+            </div>
           </div>
         </div>
 

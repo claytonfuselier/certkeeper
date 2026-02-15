@@ -17,6 +17,7 @@ Supports **HTTP-01** and **DNS-01** (Cloudflare) challenge types, including **wi
 - **Multi-domain & wildcard certificates** via Let's Encrypt
 - **HTTP-01** (standalone) and **DNS-01** (Cloudflare API) challenge support
 - **Web dashboard** — issue, renew, revoke, and monitor certificates
+- **Agent system** — token-authenticated agents with deployments pull certificates from CertKeeper for distribution to remote hosts
 - **Smart automatic renewal** — randomized twice-weekly schedule (configurable), with managed TLS cert auto-sync
 - **SQLite storage** — zero external dependencies, no database server needed
 - **File logging** with automatic rotation (5 MB × 5 files)
@@ -115,12 +116,15 @@ certkeeper/
 │   ├── logger.js            # Winston logger with file rotation
 │   ├── middleware/
 │   │   ├── auth.js          # Session auth middleware
+│   │   ├── agentAuth.js     # Bearer token auth for agent API
 │   │   └── sessionStore.js  # SQLite-backed session store
 │   ├── routes/
 │   │   ├── auth.js          # Login / logout / setup / password
 │   │   ├── certs.js         # Certificate CRUD + async issue/renew
 │   │   ├── dashboard.js     # Dashboard stats
-│   │   └── settings.js      # Email, Cloudflare, TLS & schedule management
+│   │   ├── settings.js      # Email, Cloudflare, TLS & schedule management
+│   │   ├── agents.js        # Admin CRUD for agents + deployments (session-authed)
+│   │   └── agent-api.js     # Agent-facing API — deployments, bundles, heartbeat (token-authed)
 │   └── services/
 │       ├── certbot.js       # Certbot CLI wrapper with error classification
 │       ├── cloudflare.js    # Cloudflare API token validation
@@ -172,6 +176,19 @@ All API routes are prefixed with `/api`. Authenticated routes require a valid se
 | `GET` | `/api/settings/tls/managed` | Yes | List managed certs available for TLS |
 | `GET` | `/api/settings/schedule` | Yes | Get current renewal schedule |
 | `PUT` | `/api/settings/schedule` | Yes | Update renewal schedule (days & times) |
+| `GET` | `/api/agents` | Yes | List all agents with deployments |
+| `GET` | `/api/agents/:id` | Yes | Get agent detail |
+| `POST` | `/api/agents` | Yes | Create agent (returns token once) |
+| `PATCH` | `/api/agents/:id` | Yes | Update agent name or enabled state |
+| `DELETE` | `/api/agents/:id` | Yes | Delete agent + all its deployments |
+| `POST` | `/api/agents/:id/regenerate-token` | Yes | Regenerate agent token |
+| `GET` | `/api/agents/:id/deployments` | Yes | List deployments for an agent |
+| `POST` | `/api/agents/:id/deployments` | Yes | Add a deployment to an agent |
+| `PATCH` | `/api/agents/:agentId/deployments/:depId` | Yes | Update deployment (enable/disable) |
+| `DELETE` | `/api/agents/:agentId/deployments/:depId` | Yes | Delete a deployment |
+| `GET` | `/api/agent/deployments` | Token | List this agent's deployments + cert metadata |
+| `GET` | `/api/agent/deployments/:id/bundle` | Token | Download cert + key PEM bundle for a deployment |
+| `POST` | `/api/agent/heartbeat` | Token | Agent keepalive / check-in |
 
 ### Request a certificate
 
@@ -184,6 +201,35 @@ POST /api/certs
 ```
 
 Returns `202 Accepted` — poll `GET /api/certs/:id` until `status` changes from `issuing` to `valid` or `error`.
+
+<br>
+
+## Agents & Deployments
+
+CertKeeper includes an **agent system** for distributing certificates to remote hosts. A future `certkeeper-agent` CLI will connect to CertKeeper, discover its deployments, and pull certificate bundles.
+
+### Concepts
+
+| Term | Description |
+|------|-------------|
+| **Agent** | Represents a remote host. Creates a bearer token (`ck_<64 hex>`) shown once at creation. |
+| **Deployment** | Ties an agent to a certificate. An agent can have many deployments. Each tracks `last_deployed_at` and `last_deployed_hash` to detect renewals. |
+
+### Admin workflow
+
+1. Create an agent in **Agents** → copy the generated token.
+2. Expand the agent row and click **Add Deployment** — pick a name and a certificate.
+3. Install the token on the remote host. When the agent connects, it calls `GET /api/agent/deployments` to discover its work.
+
+### Agent-facing API (token-authed)
+
+All agent endpoints require `Authorization: Bearer ck_...`.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/agent/deployments` | Returns deployments with cert metadata and a `content_hash` (SHA-256 of `fullchain.pem`, 16 hex chars). The agent compares this to its local hash to detect renewals without downloading. |
+| `GET /api/agent/deployments/:id/bundle` | Returns `fullchain`, `cert`, and `key` PEM contents. Updates `last_deployed_at` / `last_deployed_hash`. |
+| `POST /api/agent/heartbeat` | Keepalive — returns agent info and deployment count. |
 
 <br>
 

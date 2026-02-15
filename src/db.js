@@ -192,6 +192,48 @@ async function initDatabase() {
     logger.error('Staging column migration failed', { err: migErr.message });
   }
 
+  // Create agents table (for certkeeper-agent token auth)
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS agents (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      name            TEXT    NOT NULL,
+      token_hash      TEXT    NOT NULL UNIQUE,
+      token_prefix    TEXT    NOT NULL,
+      enabled         INTEGER NOT NULL DEFAULT 1,
+      last_contact_at TEXT,
+      last_contact_ip TEXT,
+      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS deployments (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      agent_id        INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      certificate_id  INTEGER NOT NULL REFERENCES certificates(id) ON DELETE CASCADE,
+      name            TEXT    NOT NULL,
+      enabled         INTEGER NOT NULL DEFAULT 1,
+      last_deployed_at    TEXT,
+      last_deployed_hash  TEXT,
+      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // ---- Agent / deployment migrations ----
+
+  // Drop old agent_cert_scopes table if it exists (replaced by deployments)
+  try {
+    const oldTable = _db._db.exec(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_cert_scopes'"
+    );
+    if (oldTable.length > 0 && oldTable[0].values.length > 0) {
+      logger.info('Dropping legacy agent_cert_scopes table (replaced by deployments)');
+      _db.exec('DROP TABLE IF EXISTS agent_cert_scopes');
+    }
+  } catch (migErr) {
+    logger.error('agent_cert_scopes migration failed', { err: migErr.message });
+  }
+
   _db.save();
   logger.info('Database initialized', { path: config.paths.db });
 

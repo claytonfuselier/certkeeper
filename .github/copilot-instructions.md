@@ -26,12 +26,15 @@ src/
 ├── logger.js            # Winston setup with file rotation
 ├── middleware/
 │   ├── auth.js          # requireAuth session middleware
+│   ├── agentAuth.js     # requireAgentAuth — Bearer token middleware for agent API
 │   └── sessionStore.js  # SQLite-backed express-session store
 ├── routes/
 │   ├── auth.js          # Login, logout, first-run setup, password change
 │   ├── certs.js         # Certificate CRUD, async issue/renew, retry, revoke
 │   ├── dashboard.js     # Stats endpoint
-│   └── settings.js      # Email, Cloudflare, TLS, schedule management
+│   ├── settings.js      # Email, Cloudflare, TLS, schedule management
+│   ├── agents.js        # Admin CRUD for agents + nested deployment CRUD (session-authed)
+│   └── agent-api.js     # Agent-facing API — deployments list, bundle download, heartbeat (token-authed)
 └── services/
     ├── certbot.js       # Certbot CLI wrapper (child_process) with error classification
     ├── cloudflare.js    # CF API token validation
@@ -73,6 +76,8 @@ public/
 - **`settings`** — `key, value` (stores email, CF token, TLS domain, renewal schedule)
 - **`audit_log`** — `id, action, details (JSON), created_at`
 - **`sessions`** — express-session store
+- **`agents`** — `id, name, token_hash (SHA-256), token_prefix (first 8 hex chars for UI display), enabled, last_contact_at, last_contact_ip, created_at, updated_at`
+- **`deployments`** — `id, agent_id (FK → agents, CASCADE), certificate_id (FK → certificates, CASCADE), name, enabled, last_deployed_at, last_deployed_hash, created_at, updated_at` — the unit of work that ties an agent to a certificate
 
 ### Certificate Lifecycle
 
@@ -97,6 +102,20 @@ public/
 - **Managed cert:** User selects an issued Let's Encrypt cert; files are copied to `data/tls/` and auto-refreshed on renewal.
 - **HTTP mode (`USE_HTTP=true`):** No TLS, all TLS settings disabled.
 
+### Agents & Deployments
+
+Agents are remote systems (e.g. a future "certkeeper-agent" CLI) that pull certificates from CertKeeper via a token-authenticated API.
+
+- **Agents** represent a remote host. Creating an agent generates a `ck_<64 hex>` bearer token (shown once, stored as SHA-256 hash). Agents authenticate via `Authorization: Bearer ck_...` header.
+- **Deployments** tie an agent to a certificate. An agent can have many deployments. Each deployment has a name, references a certificate, and tracks `last_deployed_at` / `last_deployed_hash` so the agent knows when a cert has been renewed.
+- **Agent middleware** (`agentAuth.js`) hashes the bearer token, looks up the agent row, updates `last_contact_at`/`last_contact_ip`, and sets `req.agent`.
+- **Admin routes** (`/api/agents`) are session-authed and provide full CRUD for agents and their deployments.
+- **Agent-facing routes** (`/api/agent`) are token-authed:
+  - `GET /api/agent/deployments` — returns the agent's deployments with cert metadata + `content_hash` (SHA-256 of fullchain.pem, truncated to 16 hex chars) so the agent can detect renewals without downloading.
+  - `GET /api/agent/deployments/:id/bundle` — returns cert + key PEM files for a specific deployment; updates `last_deployed_at`/`last_deployed_hash`.
+  - `POST /api/agent/heartbeat` — keepalive, returns deployment count.
+- **Frontend** — Agents page shows an expandable table: each agent row expands to reveal its deployments with inline add/enable/disable/delete controls. Agent create/edit is a simple name-only modal; deployments are added via a separate modal with name + certificate dropdown.
+
 ## Guidelines
 
 - Keep dependencies minimal — this is a zero-config, lightweight tool.
@@ -105,3 +124,55 @@ public/
 - Test with `LETSENCRYPT_STAGING=true` to avoid rate limits.
 - Certbot must be installed on the host (or use Docker). The app checks at startup and warns if missing.
 - `selfsigned` v5.5.0 quirks: `generate()` is async (returns Promise), ignores `days` option — use `notAfterDate` (Date object).
+
+## To-Do
+
+### Frontend refactor: ES modules + pushState routing
+
+The current frontend is a single `index.html` + single `app.js` IIFE with hash-based routing (`#certificates`, `#settings`). This prevents deep linking and becomes unwieldy as the app grows. The next improvement should split the frontend into ES modules and adopt `history.pushState()` path-based routing.
+
+#### Goals
+
+- **File splitting:** Break `app.js` into ES modules (`<script type="module">`), one per feature area:
+  - `js/router.js` — pushState router, route definitions, navigation helpers
+  - `js/api.js` — `api()` fetch wrapper, `toast()`, `escapeHtml()`, shared utilities
+  - `js/dashboard.js` — dashboard page logic
+  - `js/certs.js` — certificate list, new-cert form, detail view, polling
+  - `js/agents.js` — agents table, expandable deployments, agent/deployment modals
+  - `js/settings.js` — settings tabs (email, schedule, cloudflare, TLS, password)
+  - `js/auth.js` — login form, setup flow, session management
+  - `js/app.js` — entry point, imports all modules, calls `init()`
+- **Path-based routing:** Replace `#certificates` with real URL paths (`/certificates`, `/agents/3`, `/settings/tls`):
+  - Use `history.pushState()` / `popstate` event instead of `hashchange`
+  - URLs become bookmarkable and shareable (e.g. `/certificates/5` links directly to a cert)
+  - Browser back/forward works naturally
+- **Server catch-all:** Add a single Express route **after** API routes and static file middleware:
+  ```js
+  app.get(/^\/(?!api\/).*/, (req, res) => {
+    res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+  });
+  ```
+  This ensures all non-API paths serve the SPA shell so the client-side router can handle them.
+- **Route structure:**
+  - `/` → dashboard
+  - `/certificates` → certificate list
+  - `/certificates/new` → new certificate form
+  - `/certificates/:id` → certificate detail (future)
+  - `/agents` → agents list with expandable deployments
+  - `/settings` → settings (default tab)
+  - `/settings/:tab` → settings with specific tab active (e.g. `/settings/tls`)
+  - `/login` → login form (unauthenticated)
+  - `/setup` → first-run setup (unauthenticated)
+- **`index.html` stays as the SPA shell** — contains the layout (nav, main container), all `<section>` page containers, and modals. No templating engine needed.
+- **No build step.** ES modules work natively in all modern browsers. No bundler, no transpiler.
+- **No new dependencies.** This is purely a frontend restructure.
+
+#### Migration approach
+
+1. Create `js/router.js` with `pushState` navigation and route matching
+2. Extract shared utilities into `js/api.js`
+3. Move each page's logic into its own module, exporting an `init()` and `load()` function
+4. Update `index.html` to use `<script type="module" src="js/app.js">`
+5. Convert all `<a data-page="...">` navigation to use the router's `navigate()` function
+6. Add the server-side catch-all route in `src/index.js`
+7. Update nav links to use real `href` paths with click interception

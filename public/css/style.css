@@ -426,6 +426,62 @@ input[type="time"]:focus { border-color: var(--primary); }
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ---- Modal ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem;
+  width: 100%;
+  max-width: 520px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.4);
+}
+.modal-card h3 { margin-bottom: 1rem; }
+.modal-actions {
+  display: flex;
+  gap: .5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+/* ---- Agent deployment sub-rows ---- */
+.agent-row { cursor: default; }
+.deployment-row {
+  background: color-mix(in srgb, var(--bg-card) 85%, var(--primary) 15%);
+}
+.deployment-cell {
+  font-size: .85rem;
+  padding-top: .35rem !important;
+  padding-bottom: .35rem !important;
+}
+
+/* ---- Token display ---- */
+.token-display {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .75rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  overflow-x: auto;
+}
+.token-display code {
+  flex: 1;
+  font-size: .8rem;
+  word-break: break-all;
+  color: var(--success);
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 768px) {
   .sidebar { width: 60px; }

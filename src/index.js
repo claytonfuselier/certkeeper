@@ -19,6 +19,8 @@ const authRoutes = require('./routes/auth');
 const certsRoutes = require('./routes/certs');
 const dashboardRoutes = require('./routes/dashboard');
 const settingsRoutes = require('./routes/settings');
+const agentsRoutes = require('./routes/agents');
+const agentApiRoutes = require('./routes/agent-api');
 const { requireAuth } = require('./middleware/auth');
 
 // ---------------------------------------------------------------------------
@@ -91,6 +93,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/certs', certsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/agents', agentsRoutes);
+app.use('/api/agent', agentApiRoutes);
 
 // --- Frontend (static files) ---
 app.use(express.static(path.join(__dirname, '..', 'public')));
