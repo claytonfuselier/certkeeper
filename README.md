@@ -82,6 +82,7 @@ All settings have built-in defaults and can be managed through the web UI. To ov
 | `PORT` | `3000` | Server port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `NODE_ENV` | `production` | Node environment |
+| `USE_HTTP` | `false` | Disable HTTPS and run plain HTTP — for use behind a reverse proxy, Codespaces, etc. |
 | `SESSION_SECRET` | *(auto-generated)* | Session encryption key — auto-generated and persisted to `./data/.session-secret` if not set |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | *(web UI setup)* | If set, overrides DB credentials and disables password changes in the UI |
 | `LETSENCRYPT_EMAIL` | *(web UI)* | Registration email — if set, overrides the UI value |

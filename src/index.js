@@ -1,4 +1,5 @@
 const express = require('express');
+const http = require('http');
 const https = require('https');
 const session = require('express-session');
 const path = require('path');
@@ -80,7 +81,7 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: true,
+    secure: !config.useHttp,
     maxAge: 24 * 60 * 60 * 1000, // 1 day
   },
 }));
@@ -138,18 +139,30 @@ async function start() {
     logger.info('Recovered stuck certificates', { count: stuck.length, ids: stuck.map((r) => r.id) });
   }
 
-  // Start HTTPS server with auto-generated or custom TLS cert
-  const tls = await getTlsCredentials();
-  const server = https.createServer({ cert: tls.cert, key: tls.key }, app);
-
-  server.listen(config.port, config.host, (err) => {
-    if (err) {
-      logger.error('Failed to bind', { err });
-      process.exit(1);
-    }
-    logger.info(`Server listening on https://${config.host}:${config.port} (TLS: ${tls.source})`);
-    logger.info(`Staging mode: ${config.letsencrypt.staging}`);
-  });
+  // Start server — HTTPS by default, plain HTTP when USE_HTTP=true
+  let server;
+  if (config.useHttp) {
+    server = http.createServer(app);
+    server.listen(config.port, config.host, (err) => {
+      if (err) {
+        logger.error('Failed to bind', { err });
+        process.exit(1);
+      }
+      logger.info(`Server listening on http://${config.host}:${config.port} (TLS: disabled via USE_HTTP)`);
+      logger.info(`Staging mode: ${config.letsencrypt.staging}`);
+    });
+  } else {
+    const tls = await getTlsCredentials();
+    server = https.createServer({ cert: tls.cert, key: tls.key }, app);
+    server.listen(config.port, config.host, (err) => {
+      if (err) {
+        logger.error('Failed to bind', { err });
+        process.exit(1);
+      }
+      logger.info(`Server listening on https://${config.host}:${config.port} (TLS: ${tls.source})`);
+      logger.info(`Staging mode: ${config.letsencrypt.staging}`);
+    });
+  }
 
   // Start the auto-renewal cron scheduler
   scheduler.start();
