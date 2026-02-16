@@ -154,7 +154,6 @@
               <div id="dns01-no-token" class="error-msg hidden" style="margin-top:.4rem">
                 ⚠ No Cloudflare API token configured. <a href="#" data-goto="settings">Add one in Settings</a> to use DNS-01 challenges.
               </div>
-              </div>
               <div id="cert-form-error" class="error-msg hidden"></div>
               <div id="cert-form-success" class="success-msg hidden"></div>
               <button type="submit" class="btn btn-primary" id="cert-submit-btn">
@@ -176,7 +175,7 @@
           <!-- Self-signed TLS warning -->
           <div id="agents-tls-warning" class="hidden" style="background:var(--bg-input);border:1px solid var(--warning);border-radius:var(--radius);padding:.75rem 1rem;margin-bottom:1rem;color:var(--warning);font-size:.9rem">
             ⚠ Agent creation is disabled while the server uses a self-signed TLS certificate. Agents cannot verify the server's identity during enrollment.
-            <a href="#settings" style="color:var(--primary);margin-left:.25rem">Configure TLS →</a>
+            <a href="#" data-goto="settings" style="color:var(--primary);margin-left:.25rem">Configure TLS →</a>
           </div>
 
           <!-- Agent list -->
