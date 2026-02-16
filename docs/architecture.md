@@ -35,7 +35,18 @@ src/
 public/
 ├── index.html            Single-page app (all views in one file)
 ├── css/style.css         Dark-theme styles, CSS variables
-└── js/app.js             All frontend logic (IIFE, hash routing, fetch API calls)
+└── js/                   ES modules (no build step)
+    ├── app.js            Entry point — imports all modules, registers routes, boots app
+    ├── router.js         pushState router with auth guards and route lifecycle
+    ├── api.js            Centralized fetch wrapper with 401 redirect
+    ├── dom.js            Shared DOM utilities ($, toast, escapeHtml, formatDate, etc.)
+    ├── state.js          Global TLS/agent state management
+    ├── auth.js           Login, setup, logout, session check
+    ├── dashboard.js      Dashboard stats and audit log
+    ├── certs.js          Certificate CRUD, polling, new-cert form
+    ├── agents.js         Agents table, deployments, modals, TLS safety guards
+    ├── notifications.js  Notification channel tabs (7 channels), per-event toggles
+    └── settings.js       Settings tabs (status, Let's Encrypt, Cloudflare, TLS, agents, password)
 
 data/                     Runtime data (created automatically)
 ├── certkeeper.db         SQLite database file
@@ -111,11 +122,10 @@ All methods are synchronous (in-memory). Writes trigger a debounced `_scheduleSa
 | `updated_at` | TEXT | `datetime('now')` |
 
 Key settings values:
-- `email` — Let's Encrypt registration email
-- `cf_api_token` — Cloudflare API token (encrypted at rest)
-- `tls_source` — `self-signed`, `custom`, or `managed`
-- `tls_managed_domain` — domain of managed cert
-- `schedule_day1`, `schedule_day2` — renewal cron specs (JSON)
+- `letsencrypt_email` — Let's Encrypt registration email
+- `cloudflare_api_token` — Cloudflare API token (plaintext)
+- `tls_managed_domain` — domain of managed cert (TLS source is detected from files on disk, not stored)
+- `renewal_schedule` — renewal schedule as JSON (contains day1/day2 specs)
 - `agent_heartbeat_interval` — seconds (default `180`)
 - `agent_offline_threshold` — missed heartbeats (default `3`)
 - `agent_config_version` — global integer, incremented on settings change
@@ -344,13 +354,17 @@ A `node-cron` job runs every minute (`agentMonitor.js`):
 
 ### Stack
 - Vanilla HTML/CSS/JS — no framework, no build step
-- Single `index.html` SPA with `<section>` elements for each view
-- Hash-based routing (`#certificates`, `#settings`, `#agents`)
+- Single `index.html` SPA with `<div>` page containers for each view
+- ES modules (`<script type="module">`) split across 11 files in `public/js/`
+- Path-based routing via `history.pushState()` with `popstate` listener
 - Dark theme via CSS custom properties
 
 ### Key Patterns
-- **`api(method, url, body)`** — central fetch wrapper, throws on non-2xx
-- **`toast(msg, type)`** — notification toasts
-- **Settings tabs** — 8 tabs (`Status`, `Registration Email`, `Renew Schedule`, `Cloudflare API`, `TLS`, `Notifications`, `Agents`, `Change Password`) using CSS `.settings-pane.active`
+- **`api(method, url, body)`** — central fetch wrapper (`api.js`), throws on non-2xx, redirects to `/login` on 401
+- **`toast(msg, type)`** — notification toasts (`dom.js`)
+- **Router** — `router.js` with auth guards, `init`/`load`/`leave` lifecycle per module, `<a href>` click interception
+- **State** — `state.js` manages global TLS/agent state with getters, setters, and `refreshTlsState()`
+- **Settings tabs** — 6 tabs (`Status`, `Let's Encrypt`, `Cloudflare API`, `TLS`, `Agents`, `Change Password`) using CSS `.settings-pane.active`
+- **Notifications** — separate page at `/notifications` with 7 channel sub-tabs, deep-linkable via `/notifications/:channel`
 - **Agent table** — expandable rows with inline deployment management
-- **Polling** — certificate issuance/renewal uses polling with `GET /api/certs/:id`
+- **Polling** — certificate issuance/renewal uses polling with `GET /api/certs`, stopped via `leave()` lifecycle hook

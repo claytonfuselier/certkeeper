@@ -42,6 +42,12 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'domains must be a non-empty array' });
     }
 
+    // Require a Cloudflare API token (env var or DB) before issuing
+    const cfToken = certbot.getCloudflareToken();
+    if (!cfToken) {
+      return res.status(400).json({ error: 'Cloudflare API token is not configured. Add one in Settings → Cloudflare API, or set the CLOUDFLARE_API_TOKEN environment variable.' });
+    }
+
     // Check for existing certificate with the same domains
     const domainStr = domains.join(' ');
     const existing = db.get(

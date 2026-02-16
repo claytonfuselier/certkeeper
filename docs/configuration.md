@@ -140,7 +140,7 @@ Or pass individual variables in the `environment` block:
 ### Setup
 
 ```bash
-git clone https://github.com/your-org/certkeeper.git
+git clone https://github.com/claytonfuselier/certkeeper.git
 cd certkeeper
 npm install --omit=dev
 sudo node src/index.js

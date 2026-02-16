@@ -231,7 +231,7 @@ Request a new certificate. This is **asynchronous** — certbot runs in the back
 **Response (202):** The certificate object with `status: "issuing"`. Poll `GET /api/certs/:id` until the status changes to `active` or `error`.
 
 **Errors:**
-- `400` — invalid domains
+- `400` — invalid domains, or Cloudflare API token not configured
 - `409` — certificate already exists for these domains (includes `id` and `status` of existing). If a revoked cert exists and `overrideRevoked` is not set, returns `{ revoked: true, revokedId }`.
 
 ---

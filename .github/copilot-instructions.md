@@ -9,7 +9,7 @@ CertKeeper is a lightweight, self-hosted Let's Encrypt certificate manager with 
 - **Runtime:** Node.js 24+ (no TypeScript, no transpilation)
 - **Framework:** Express 5.x (async route handlers, `req.body` via built-in parser)
 - **Database:** SQLite via sql.js (in-memory with debounced file persistence — no native bindings)
-- **Frontend:** Vanilla HTML/CSS/JS (single `index.html` SPA with hash-based routing — no build step, no framework)
+- **Frontend:** Vanilla HTML/CSS/JS (single `index.html` SPA with pushState routing — no build step, no framework). ES modules split across 11 files in `public/js/`.
 - **Logging:** Winston with file rotation
 - **Scheduling:** node-cron
 - **TLS:** selfsigned v5.5.0 for self-signed cert generation (async API, uses `notAfterDate` not `days`)
@@ -48,7 +48,18 @@ src/
 public/
 ├── index.html           # Single-page app (all views in one file)
 ├── css/style.css        # Dark-theme styles, CSS variables
-└── js/app.js            # All frontend logic (IIFE, hash routing, fetch API calls)
+└── js/                  # ES modules (no build step)
+    ├── app.js           # Entry point — imports all modules, registers routes, boots app
+    ├── router.js        # pushState router with auth guards and route lifecycle
+    ├── api.js           # Centralized fetch wrapper with 401 redirect
+    ├── dom.js           # Shared DOM utilities ($, toast, escapeHtml, formatDate, etc.)
+    ├── state.js         # Global TLS/agent state management
+    ├── auth.js          # Login, setup, logout, session check
+    ├── dashboard.js     # Dashboard stats and audit log
+    ├── certs.js         # Certificate CRUD, polling, new-cert form
+    ├── agents.js        # Agents table, deployments, modals, TLS safety guards
+    ├── notifications.js # Notification channel tabs (7 channels), per-event toggles
+    └── settings.js      # Settings tabs (status, Let's Encrypt, Cloudflare, TLS, agents, password)
 ```
 
 ## Key Patterns & Conventions
@@ -65,11 +76,14 @@ public/
 
 ### Frontend
 
-- **No framework, no build step.** Vanilla JS inside an IIFE in `app.js`.
-- **Hash-based routing** — `#certificates`, `#new-cert`, `#settings`, `#agents`. Views are `<section>` elements toggled via CSS class.
-- **`api(method, url, body)`** is the central fetch wrapper. Throws on non-2xx with the full response body attached to the Error object.
-- **Settings page** uses a tab layout with 8 tabs: Status, Registration Email, Renew Schedule, Cloudflare API, TLS, Notifications, Agents, Change Password. Tabs use CSS `.settings-pane.active` for show/hide.
-- **Toast notifications** via `toast(msg, type)`.
+- **No framework, no build step.** Vanilla JS using native ES modules (`<script type="module">`).
+- **Path-based routing** via `history.pushState()` — `/certificates`, `/agents`, `/settings/tls`, `/notifications/slack`. Views are `<div>` page containers toggled by the router.
+- **ES modules** split across 11 files in `public/js/`: `app.js` (entry point), `router.js`, `api.js`, `dom.js`, `state.js`, `auth.js`, `dashboard.js`, `certs.js`, `agents.js`, `notifications.js`, `settings.js`.
+- **Module lifecycle:** Each page module exports `init()` (once at startup, binds listeners), `load(params)` (on each navigation), and optionally `leave()` (cleanup on route exit).
+- **`api(method, url, body)`** is the central fetch wrapper (`api.js`). Throws on non-2xx, redirects to `/login` on 401.
+- **Settings page** uses a tab layout with 6 tabs: Status, Let's Encrypt, Cloudflare API, TLS, Agents, Change Password. Tabs use CSS `.settings-pane.active` for show/hide.
+- **Notifications** is a separate page at `/notifications` with 7 channel sub-tabs, deep-linkable via `/notifications/:channel`.
+- **Toast notifications** via `toast(msg, type)` from `dom.js`.
 - **CSS uses custom properties** (dark theme): `--bg`, `--text`, `--primary`, `--border`, etc.
 
 ### Database Schema (key tables)
@@ -176,58 +190,3 @@ Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates
 - `selfsigned` v5.5.0 quirks: `generate()` is async (returns Promise), ignores `days` option — use `notAfterDate` (Date object).
 - The internal CA (`ca.js`) is pure Node.js crypto. All ASN.1/DER encoding is done manually. Do not add openssl as a dependency.
 - Domains in the `certificates` table are stored as **space-separated strings** (e.g. `"example.com *.example.com"`). Routes split them into arrays for API responses: `cert.domains.split(' ')`.
-
-## To-Do
-
-### Frontend refactor: ES modules + pushState routing
-
-The current frontend is a single `index.html` + single `app.js` IIFE with imperative navigation (`navigate(page)` toggling `.page` divs). This prevents deep linking and becomes unwieldy as the app grows. The next improvement should split the frontend into ES modules and adopt `history.pushState()` path-based routing.
-
-#### Goals
-
-- **File splitting:** Break `app.js` into ES modules (`<script type="module">`), one per feature area:
-  - `js/router.js` — pushState router, route definitions, navigation helpers
-  - `js/api.js` — `api()` fetch wrapper, `toast()`, `escapeHtml()`, shared utilities, `refreshTlsState()`
-  - `js/dashboard.js` — dashboard page logic
-  - `js/certs.js` — certificate list, new-cert form, detail view, polling
-  - `js/agents.js` — agents table, expandable deployments, agent/deployment/token modals, TLS safety-guard UI
-  - `js/notifications.js` — notification channel tabs (7 channels), per-event toggle UI, test button
-  - `js/settings.js` — settings tabs (status, Let's Encrypt, Cloudflare API, TLS, agents monitoring, password)
-  - `js/auth.js` — login form, setup flow, session management
-  - `js/app.js` — entry point, imports all modules, calls `init()`
-- **Path-based routing:** Replace `navigate('certificates')` with real URL paths (`/certificates`, `/agents/3`, `/settings/tls`):
-  - Use `history.pushState()` / `popstate` event instead of imperative `navigate()` calls
-  - URLs become bookmarkable and shareable (e.g. `/certificates/5` links directly to a cert)
-  - Browser back/forward works naturally
-- **Server catch-all:** Add a single Express route **after** API routes and static file middleware:
-  ```js
-  app.get(/^\/(?!api\/).*/, (req, res) => {
-    res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
-  });
-  ```
-  This ensures all non-API paths serve the SPA shell so the client-side router can handle them.
-- **Route structure:**
-  - `/` → dashboard
-  - `/certificates` → certificate list
-  - `/certificates/new` → new certificate form
-  - `/certificates/:id` → certificate detail (future)
-  - `/agents` → agents list with expandable deployments
-  - `/notifications` → notification channel configuration
-  - `/notifications/:channel` → specific channel tab active (e.g. `/notifications/slack`)
-  - `/settings` → settings (default tab: status)
-  - `/settings/:tab` → settings with specific tab active (e.g. `/settings/tls`)
-  - `/login` → login form (unauthenticated)
-  - `/setup` → first-run setup (unauthenticated)
-- **`index.html` stays as the SPA shell** — contains the layout (nav, main container), all `<section>` page containers, and modals. No templating engine needed.
-- **No build step.** ES modules work natively in all modern browsers. No bundler, no transpiler.
-- **No new dependencies.** This is purely a frontend restructure.
-
-#### Migration approach
-
-1. Create `js/router.js` with `pushState` navigation and route matching
-2. Extract shared utilities into `js/api.js` (including global TLS/agent state and `refreshTlsState()`)
-3. Move each page's logic into its own module, exporting an `init()` and `load()` function
-4. Update `index.html` to use `<script type="module" src="js/app.js">`
-5. Convert all `<a data-page="...">` and `<a data-goto="...">` navigation to use the router's `navigate()` function
-6. Add the server-side catch-all route in `src/index.js`
-7. Update nav links to use real `href` paths with click interception

@@ -103,7 +103,8 @@ Authorization: Bearer cke_<enrollment_token>
 |--------|---------|
 | `400` | Missing or invalid CSR |
 | `401` | Invalid or expired enrollment token |
-| `409` | Fingerprint collision — retry with a new key pair (`retry: true` in body) |
+| `403` | Agent is disabled (admin disabled the agent before enrollment completed) |
+| `409` | Two possible causes: **(a)** Agent is already enrolled — do not retry, inform the operator (no `retry` field in body). **(b)** Fingerprint collision — retry with a new key pair (`retry: true` in body). |
 
 **After receiving the response:**
 1. Save `certificate` to `client.crt`
@@ -463,7 +464,7 @@ RE-ENROLLMENT (admin-initiated, when cert is expired or compromised):
 |-------------|---------|--------------|
 | `200` | Success | Process response normally |
 | `400` | Bad request (invalid CSR, cert not active) | Log error, fix the request — don't retry blindly |
-| `401` | Authentication failed | Agent cert may be revoked, expired, or agent disabled. Log error, alert the operator. Stop heartbeats if persistent. |
+| `401` | Authentication failed | Agent cert not recognized or expired. Log error, alert the operator. Stop heartbeats if persistent. |
 | `403` | Agent disabled | The agent has been disabled server-side. Stop polling, log warning, alert the operator. |
 | `404` | Not found | Deployment may have been removed. Update local state, remove local cert files if appropriate. |
 | `409` | Conflict | During enrollment: agent already has a cert. During cert renewal: fingerprint collision — retry with new key pair if `retry: true`. |

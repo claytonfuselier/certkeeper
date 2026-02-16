@@ -10,7 +10,7 @@ A lightweight, self-hosted certificate manager for Let's Encrypt with a web UI.
 
 Not every service sits behind a reverse proxy that handles TLS for you. Internal services, mail servers, database clusters, IoT devices — they all need valid certificates, but HTTP-01 challenges don't work when there's no public web server. For applications that support DNS-01, you'd have to manage multiple API keys or risk sharing them.
 
-CertKeeper centralizes certificate management using DNS-01 challenges (via Cloudflare) and distributes certificates to where they're needed through its agent system. A single CertKeeper instance handles the Let's Encrypt workflow for all your services; Lightweight agent on your hosts checksin with CertKeeper, pulls down the certs, and installs them automatically.
+CertKeeper centralizes certificate management using DNS-01 challenges (via Cloudflare) and distributes certificates to where they're needed through its agent system. A single CertKeeper instance handles the Let's Encrypt workflow for all your services; lightweight agents on your hosts check in with CertKeeper, pull down the certs, and install them automatically.
 
 <br>
 
