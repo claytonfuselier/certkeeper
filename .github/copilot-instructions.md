@@ -181,21 +181,22 @@ Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates
 
 ### Frontend refactor: ES modules + pushState routing
 
-The current frontend is a single `index.html` + single `app.js` IIFE with hash-based routing (`#certificates`, `#settings`). This prevents deep linking and becomes unwieldy as the app grows. The next improvement should split the frontend into ES modules and adopt `history.pushState()` path-based routing.
+The current frontend is a single `index.html` + single `app.js` IIFE with imperative navigation (`navigate(page)` toggling `.page` divs). This prevents deep linking and becomes unwieldy as the app grows. The next improvement should split the frontend into ES modules and adopt `history.pushState()` path-based routing.
 
 #### Goals
 
 - **File splitting:** Break `app.js` into ES modules (`<script type="module">`), one per feature area:
   - `js/router.js` — pushState router, route definitions, navigation helpers
-  - `js/api.js` — `api()` fetch wrapper, `toast()`, `escapeHtml()`, shared utilities
+  - `js/api.js` — `api()` fetch wrapper, `toast()`, `escapeHtml()`, shared utilities, `refreshTlsState()`
   - `js/dashboard.js` — dashboard page logic
   - `js/certs.js` — certificate list, new-cert form, detail view, polling
-  - `js/agents.js` — agents table, expandable deployments, agent/deployment modals
-  - `js/settings.js` — settings tabs (email, schedule, cloudflare, TLS, password)
+  - `js/agents.js` — agents table, expandable deployments, agent/deployment/token modals, TLS safety-guard UI
+  - `js/notifications.js` — notification channel tabs (7 channels), per-event toggle UI, test button
+  - `js/settings.js` — settings tabs (status, Let's Encrypt, Cloudflare API, TLS, agents monitoring, password)
   - `js/auth.js` — login form, setup flow, session management
   - `js/app.js` — entry point, imports all modules, calls `init()`
-- **Path-based routing:** Replace `#certificates` with real URL paths (`/certificates`, `/agents/3`, `/settings/tls`):
-  - Use `history.pushState()` / `popstate` event instead of `hashchange`
+- **Path-based routing:** Replace `navigate('certificates')` with real URL paths (`/certificates`, `/agents/3`, `/settings/tls`):
+  - Use `history.pushState()` / `popstate` event instead of imperative `navigate()` calls
   - URLs become bookmarkable and shareable (e.g. `/certificates/5` links directly to a cert)
   - Browser back/forward works naturally
 - **Server catch-all:** Add a single Express route **after** API routes and static file middleware:
@@ -211,7 +212,9 @@ The current frontend is a single `index.html` + single `app.js` IIFE with hash-b
   - `/certificates/new` → new certificate form
   - `/certificates/:id` → certificate detail (future)
   - `/agents` → agents list with expandable deployments
-  - `/settings` → settings (default tab)
+  - `/notifications` → notification channel configuration
+  - `/notifications/:channel` → specific channel tab active (e.g. `/notifications/slack`)
+  - `/settings` → settings (default tab: status)
   - `/settings/:tab` → settings with specific tab active (e.g. `/settings/tls`)
   - `/login` → login form (unauthenticated)
   - `/setup` → first-run setup (unauthenticated)
@@ -222,9 +225,9 @@ The current frontend is a single `index.html` + single `app.js` IIFE with hash-b
 #### Migration approach
 
 1. Create `js/router.js` with `pushState` navigation and route matching
-2. Extract shared utilities into `js/api.js`
+2. Extract shared utilities into `js/api.js` (including global TLS/agent state and `refreshTlsState()`)
 3. Move each page's logic into its own module, exporting an `init()` and `load()` function
 4. Update `index.html` to use `<script type="module" src="js/app.js">`
-5. Convert all `<a data-page="...">` navigation to use the router's `navigate()` function
+5. Convert all `<a data-page="...">` and `<a data-goto="...">` navigation to use the router's `navigate()` function
 6. Add the server-side catch-all route in `src/index.js`
 7. Update nav links to use real `href` paths with click interception
