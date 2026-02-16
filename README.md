@@ -85,7 +85,6 @@ All settings have built-in defaults and can be managed through the web UI. To ov
 | `PORT` | `3000` | Server port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `NODE_ENV` | `production` | Node environment |
-| `USE_HTTP` | `false` | Disable HTTPS and run plain HTTP — for use behind a reverse proxy, Codespaces, etc. |
 | `SESSION_SECRET` | *(auto-generated)* | Session encryption key — auto-generated and persisted to `./data/.session-secret` if not set |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | *(web UI setup)* | If set, overrides DB credentials and disables password changes in the UI |
 | `LETSENCRYPT_EMAIL` | *(web UI)* | Registration email — if set, overrides the UI value |
@@ -124,11 +123,12 @@ certkeeper/
 │   │   ├── dashboard.js     # Dashboard stats
 │   │   ├── settings.js      # Email, Cloudflare, TLS & schedule management
 │   │   ├── agents.js        # Admin CRUD for agents + deployments (session-authed)
-│   │   └── agent-api.js     # Agent-facing API — deployments, bundles, heartbeat (token-authed)
+│   │   └── agent-api.js     # Agent-facing API — deployments, bundles, heartbeat (mTLS-authed)
 │   └── services/
 │       ├── certbot.js       # Certbot CLI wrapper with error classification
 │       ├── cloudflare.js    # Cloudflare API token validation
 │       ├── scheduler.js     # Randomized twice-weekly auto-renewal
+│       ├── agentMonitor.js  # Agent liveness cron (offline detection + notifications)
 │       └── tls.js           # HTTPS cert management (self-signed / custom / managed)
 ├── Dockerfile               # Multi-stage: Node 24 deps → Python 3.13/certbot runtime
 ├── docker-compose.yml
@@ -182,13 +182,19 @@ All API routes are prefixed with `/api`. Authenticated routes require a valid se
 | `PATCH` | `/api/agents/:id` | Yes | Update agent name or enabled state |
 | `DELETE` | `/api/agents/:id` | Yes | Delete agent + all its deployments |
 | `POST` | `/api/agents/:id/regenerate-token` | Yes | Regenerate agent token |
+| `POST` | `/api/agents/:id/actions` | Yes | Queue an action for an agent |
 | `GET` | `/api/agents/:id/deployments` | Yes | List deployments for an agent |
 | `POST` | `/api/agents/:id/deployments` | Yes | Add a deployment to an agent |
 | `PATCH` | `/api/agents/:agentId/deployments/:depId` | Yes | Update deployment (enable/disable) |
 | `DELETE` | `/api/agents/:agentId/deployments/:depId` | Yes | Delete a deployment |
-| `GET` | `/api/agent/deployments` | Token | List this agent's deployments + cert metadata |
-| `GET` | `/api/agent/deployments/:id/bundle` | Token | Download cert + key PEM bundle for a deployment |
-| `POST` | `/api/agent/heartbeat` | Token | Agent keepalive / check-in |
+| `GET` | `/api/agent/deployments` | mTLS | List this agent's deployments + cert metadata |
+| `GET` | `/api/agent/deployments/:id/bundle` | mTLS | Download cert + key PEM bundle for a deployment |
+| `POST` | `/api/agent/heartbeat` | mTLS | Agent keepalive / check-in with config versioning |
+| `POST` | `/api/agent/enroll` | Token | Exchange enrollment token + CSR for a signed client cert |
+| `POST` | `/api/agent/renew-cert` | mTLS | Renew agent's mTLS client certificate |
+| `GET` | `/api/agent/time` | None | Server clock for agent time-skew detection |
+| `GET` | `/api/settings/agents` | Yes | Get agent monitoring settings |
+| `PUT` | `/api/settings/agents` | Yes | Update heartbeat interval + offline threshold |
 
 ### Request a certificate
 
@@ -206,30 +212,42 @@ Returns `202 Accepted` — poll `GET /api/certs/:id` until `status` changes from
 
 ## Agents & Deployments
 
-CertKeeper includes an **agent system** for distributing certificates to remote hosts. A future `certkeeper-agent` CLI will connect to CertKeeper, discover its deployments, and pull certificate bundles.
+CertKeeper includes an **agent system** for distributing certificates to remote hosts. Agents authenticate via **mTLS** (mutual TLS) with a one-time enrollment token for initial bootstrap.
 
 ### Concepts
 
 | Term | Description |
 |------|-------------|
-| **Agent** | Represents a remote host. Creates a bearer token (`ck_<64 hex>`) shown once at creation. |
+| **Agent** | Represents a remote host. Creating one generates a one-time enrollment token (`cke_<64 hex>`, valid 1 hour) for mTLS bootstrap. |
 | **Deployment** | Ties an agent to a certificate. An agent can have many deployments. Each tracks `last_deployed_at` and `last_deployed_hash` to detect renewals. |
+| **Heartbeat** | Agents check in every `heartbeat_interval` seconds (default 180s / 3 min, configurable in Settings → Agents). The server tracks liveness and delivers queued actions. |
 
 ### Admin workflow
 
-1. Create an agent in **Agents** → copy the generated token.
-2. Expand the agent row and click **Add Deployment** — pick a name and a certificate.
-3. Install the token on the remote host. When the agent connects, it calls `GET /api/agent/deployments` to discover its work.
+1. Create an agent in **Agents** → copy the generated enrollment token.
+2. Install the token on the remote host. The agent exchanges it for a signed mTLS client certificate.
+3. Expand the agent row and click **Add Deployment** — pick a name and a certificate.
+4. The agent discovers deployments via `GET /api/agent/deployments` and pulls cert bundles when `content_hash` changes.
 
-### Agent-facing API (token-authed)
+### Agent-facing API (mTLS-authed)
 
-All agent endpoints require `Authorization: Bearer ck_...`.
+All agent endpoints (except enrollment and time) require mTLS client certificate authentication.
 
 | Endpoint | Description |
 |----------|-------------|
+| `POST /api/agent/enroll` | One-time enrollment: exchange token + CSR for signed cert + CA cert. |
+| `POST /api/agent/renew-cert` | Renew the agent's mTLS client certificate with a new CSR. |
+| `POST /api/agent/heartbeat` | Keepalive with config versioning. Returns `heartbeat_interval`, `config_version`, `actions`, deployment count, cert expiry. |
 | `GET /api/agent/deployments` | Returns deployments with cert metadata and a `content_hash` (SHA-256 of `fullchain.pem`, 16 hex chars). The agent compares this to its local hash to detect renewals without downloading. |
 | `GET /api/agent/deployments/:id/bundle` | Returns `fullchain`, `cert`, and `key` PEM contents. Updates `last_deployed_at` / `last_deployed_hash`. |
-| `POST /api/agent/heartbeat` | Keepalive — returns agent info and deployment count. |
+| `GET /api/agent/time` | Unauthenticated server clock for time-skew detection. |
+
+### Agent monitoring
+
+- Agents that miss heartbeats are flagged as **offline** after `heartbeat_interval × offline_threshold` (default: 3 min × 3 = 9 min).
+- State transitions (`agent_offline` / `agent_online`) are logged and can trigger notifications via any configured channel.
+- The admin can queue actions for agents (e.g. `renew_agent_cert`) — delivered in the next heartbeat response.
+- UI status badges: 🟢 online (current config), 🔵 online (stale config), 🔴 offline, ⚪ unknown/not enrolled.
 
 <br>
 

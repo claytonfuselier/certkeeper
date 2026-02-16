@@ -192,18 +192,27 @@ async function initDatabase() {
     logger.error('Staging column migration failed', { err: migErr.message });
   }
 
-  // Create agents table (for certkeeper-agent token auth)
+  // Create agents table (for certkeeper-agent auth — mTLS with enrollment token bootstrap)
   _db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      name            TEXT    NOT NULL,
-      token_hash      TEXT    NOT NULL UNIQUE,
-      token_prefix    TEXT    NOT NULL,
-      enabled         INTEGER NOT NULL DEFAULT 1,
-      last_contact_at TEXT,
-      last_contact_ip TEXT,
-      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
-      updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+      id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+      name                    TEXT    NOT NULL,
+      enrollment_token_hash   TEXT,
+      enrollment_expires_at   TEXT,
+      cert_fingerprint        TEXT    UNIQUE,
+      cert_expires_at         TEXT,
+      prev_cert_fingerprint   TEXT    UNIQUE,
+      prev_cert_expires_at    TEXT,
+      cert_serial             INTEGER NOT NULL DEFAULT 0,
+      enabled                 INTEGER NOT NULL DEFAULT 1,
+      status                  TEXT,
+      next_contact_at         TEXT,
+      config_version          INTEGER NOT NULL DEFAULT 0,
+      pending_actions         TEXT,
+      last_contact_at         TEXT,
+      last_contact_ip         TEXT,
+      created_at              TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at              TEXT    NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS deployments (
@@ -232,6 +241,66 @@ async function initDatabase() {
     }
   } catch (migErr) {
     logger.error('agent_cert_scopes migration failed', { err: migErr.message });
+  }
+
+  // Add mTLS columns to agents table if missing (migration from older schema)
+  try {
+    const agentDDL = _db._db.exec(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'"
+    );
+    const ddl = agentDDL.length > 0 && agentDDL[0].values.length > 0
+      ? agentDDL[0].values[0][0]
+      : '';
+    if (ddl && !ddl.includes('cert_fingerprint')) {
+      logger.info('Migrating agents table to support mTLS authentication');
+      _db.exec('ALTER TABLE agents ADD COLUMN enrollment_token_hash TEXT');
+      _db.exec('ALTER TABLE agents ADD COLUMN enrollment_expires_at TEXT');
+      _db.exec('ALTER TABLE agents ADD COLUMN cert_fingerprint TEXT UNIQUE');
+      _db.exec('ALTER TABLE agents ADD COLUMN cert_expires_at TEXT');
+      _db.exec('ALTER TABLE agents ADD COLUMN prev_cert_fingerprint TEXT');
+      _db.exec('ALTER TABLE agents ADD COLUMN prev_cert_expires_at TEXT');
+      _db.exec('ALTER TABLE agents ADD COLUMN cert_serial INTEGER NOT NULL DEFAULT 0');
+    }
+    // Add prev_cert columns if missing (migration from single-fingerprint schema)
+    if (ddl && ddl.includes('cert_fingerprint') && !ddl.includes('prev_cert_fingerprint')) {
+      logger.info('Migrating agents table to support dual cert fingerprints');
+      _db.exec('ALTER TABLE agents ADD COLUMN prev_cert_fingerprint TEXT');
+      _db.exec('ALTER TABLE agents ADD COLUMN prev_cert_expires_at TEXT');
+    }
+  } catch (migErr) {
+    logger.error('Agent mTLS migration failed', { err: migErr.message });
+  }
+
+  // Add heartbeat / status columns to agents if missing
+  try {
+    const agentDDL = _db._db.exec(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'"
+    );
+    const ddl = agentDDL.length > 0 && agentDDL[0].values.length > 0
+      ? agentDDL[0].values[0][0]
+      : '';
+    if (ddl && !ddl.includes('next_contact_at')) {
+      logger.info('Migrating agents table to support heartbeat monitoring');
+      _db.exec("ALTER TABLE agents ADD COLUMN status TEXT");
+      _db.exec("ALTER TABLE agents ADD COLUMN next_contact_at TEXT");
+      _db.exec("ALTER TABLE agents ADD COLUMN config_version INTEGER NOT NULL DEFAULT 0");
+      _db.exec("ALTER TABLE agents ADD COLUMN pending_actions TEXT");
+    }
+  } catch (migErr) {
+    logger.error('Agent heartbeat migration failed', { err: migErr.message });
+  }
+
+  // Seed default agent monitoring settings if not present
+  const agentDefaults = {
+    agent_heartbeat_interval: '180',   // 3 minutes (in seconds)
+    agent_offline_threshold: '3',      // missed heartbeats
+    agent_config_version: '1',         // global config version — incremented on setting changes
+  };
+  for (const [key, value] of Object.entries(agentDefaults)) {
+    const existing = _db.get('SELECT key FROM settings WHERE key = ?', [key]);
+    if (!existing) {
+      _db.run('INSERT INTO settings (key, value) VALUES (?, ?)', [key, value]);
+    }
   }
 
   _db.save();

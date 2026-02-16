@@ -457,9 +457,7 @@
       $('#st-port').textContent = srv.port || '—';
 
       const tlsSource = data.tls?.source || 'self-signed';
-      $('#st-tls').innerHTML = data.tls?.httpMode
-        ? '<span class="badge badge-expired">Disabled (HTTP mode)</span>'
-        : tlsSource === 'custom'
+      $('#st-tls').innerHTML = tlsSource === 'custom'
           ? '<span class="badge badge-active">Custom / Managed</span>'
           : '<span class="badge badge-pending">Self-signed</span>';
 
@@ -576,24 +574,14 @@
 
       // ---- TLS pane ----
       const tlsStatusEl = $('#tls-status');
-      const tlsHttpMode = data.tls?.httpMode;
-      if (tlsHttpMode) {
-        tlsStatusEl.innerHTML = '<span class="badge badge-expired">Disabled</span> <span style="color:var(--text-muted);font-size:.85rem">TLS is disabled (USE_HTTP=true) — the server is running plain HTTP</span>';
-        // Disable all TLS controls
-        const tlsPane = $('#settings-tls');
-        tlsPane.querySelectorAll('select, button, textarea').forEach(el => { el.disabled = true; });
-        hide($('#tls-managed-section'));
-        hide($('#tls-custom-section'));
-      } else if (tlsSource === 'custom') {
+      if (tlsSource === 'custom') {
         tlsStatusEl.innerHTML = '<span class="badge badge-active">Custom</span> <span style="color:var(--text-muted);font-size:.85rem">Using a custom or managed certificate</span>';
       } else {
         tlsStatusEl.innerHTML = '<span class="badge badge-pending">Self-signed</span> <span style="color:var(--text-muted);font-size:.85rem">Auto-generated certificate (browser warning expected)</span>';
       }
       const tlsModeSelect = $('#tls-mode');
-      if (!tlsHttpMode) {
-        tlsModeSelect.value = tlsSource === 'custom' ? 'custom' : 'self-signed';
-        updateTlsSections();
-      }
+      tlsModeSelect.value = tlsSource === 'custom' ? 'custom' : 'self-signed';
+      updateTlsSections();
 
       // ---- Schedule pane ----
       const schedStatusEl = $('#sched-status');
@@ -621,6 +609,9 @@
           $('#sched-time2').value = `${pad(s.hour2)}:${pad(s.min2)}`;
         }
       }
+
+      // ---- Agents pane ----
+      loadAgentSettings();
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -1204,6 +1195,66 @@
     });
   }
 
+  // ---------- Agent Settings ----------
+
+  async function loadAgentSettings() {
+    try {
+      const data = await api('GET', '/api/settings/agents');
+      const intervalMinutes = Math.round(data.heartbeat_interval / 60);
+      $('#agent-heartbeat-interval').value = intervalMinutes;
+      $('#agent-offline-threshold').value = data.offline_threshold;
+      updateAgentSettingsCalc();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  function updateAgentSettingsCalc() {
+    const interval = parseInt($('#agent-heartbeat-interval').value, 10) || 3;
+    const threshold = parseInt($('#agent-offline-threshold').value, 10) || 3;
+    const totalMin = interval * threshold;
+    $('#agent-settings-calc').textContent = `Agents will be flagged as offline after ${totalMin} minute${totalMin !== 1 ? 's' : ''} of silence (${interval} min × ${threshold} missed).`;
+  }
+
+  function initAgentSettingsForm() {
+    const form = $('#agent-settings-form');
+    const errorEl = $('#agent-settings-error');
+    const successEl = $('#agent-settings-success');
+
+    $('#agent-heartbeat-interval').addEventListener('input', updateAgentSettingsCalc);
+    $('#agent-offline-threshold').addEventListener('input', updateAgentSettingsCalc);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hide(errorEl);
+      hide(successEl);
+
+      const heartbeat_interval_minutes = parseInt($('#agent-heartbeat-interval').value, 10);
+      const offline_threshold = parseInt($('#agent-offline-threshold').value, 10);
+
+      if (!heartbeat_interval_minutes || heartbeat_interval_minutes < 1) {
+        errorEl.textContent = 'Heartbeat interval must be at least 1 minute.';
+        show(errorEl);
+        return;
+      }
+      if (!offline_threshold || offline_threshold < 1) {
+        errorEl.textContent = 'Offline threshold must be at least 1.';
+        show(errorEl);
+        return;
+      }
+
+      try {
+        await api('PUT', '/api/settings/agents', { heartbeat_interval_minutes, offline_threshold });
+        successEl.textContent = 'Agent monitoring settings saved. Agents will pick up the new interval on their next heartbeat.';
+        show(successEl);
+        toast('Agent settings saved', 'success');
+      } catch (err) {
+        errorEl.textContent = err.message;
+        show(errorEl);
+      }
+    });
+  }
+
   // ---------- Sync Button ----------
 
   function initSyncButton() {
@@ -1252,19 +1303,53 @@
           ? `${formatDate(agent.last_contact_at)}${agent.last_contact_ip ? ` <span style="color:var(--text-muted);font-size:.8rem">(${escapeHtml(agent.last_contact_ip)})</span>` : ''}`
           : '<span style="color:var(--text-muted)">never</span>';
 
+        // Enrollment status column
+        let enrollCol = '';
+        if (agent.enrolled) {
+          const fpShort = agent.cert_fingerprint_short || '?';
+          const certExp = agent.cert_expires_at ? formatDate(agent.cert_expires_at) : '—';
+          enrollCol = `<span class="badge badge-active">enrolled</span> <span style="font-size:.75rem;color:var(--text-muted)" title="Cert fingerprint: ${escapeHtml(fpShort)}…\nExpires: ${escapeHtml(certExp)}">✓</span>`;
+        } else if (agent.has_enrollment_token && !agent.enrollment_token_expired) {
+          enrollCol = `<span class="badge badge-staging">pending</span> <span style="font-size:.75rem;color:var(--warning)">⏳ awaiting enrollment</span>`;
+        } else {
+          enrollCol = `<span class="badge badge-expired">not enrolled</span>`;
+        }
+
+        // Status column — combines enabled state + heartbeat liveness + config version
+        let statusCol = '';
+        if (!agent.enabled) {
+          statusCol = '<span class="badge badge-expired">disabled</span>';
+        } else if (!agent.enrolled) {
+          statusCol = '<span class="badge" style="background:var(--text-muted);color:#fff">unknown</span>';
+        } else if (agent.status === 'online' && agent.config_current) {
+          statusCol = '<span class="badge badge-active">online</span>';
+        } else if (agent.status === 'online' && !agent.config_current) {
+          statusCol = '<span class="badge" style="background:#3b82f6;color:#fff" title="Online but hasn\'t picked up latest config yet">online</span>';
+        } else if (agent.status === 'offline') {
+          statusCol = '<span class="badge badge-error">offline</span>';
+        } else {
+          statusCol = '<span class="badge" style="background:var(--text-muted);color:#fff">unknown</span>';
+        }
+
+        // Pending actions indicator
+        if (agent.pending_actions && agent.pending_actions.length > 0) {
+          statusCol += ` <span style="font-size:.75rem;color:var(--warning)" title="Pending: ${agent.pending_actions.join(', ')}">⏳</span>`;
+        }
+
         // Agent row
         const tr = document.createElement('tr');
         tr.className = 'agent-row';
         tr.innerHTML = `
           <td class="agent-expand-cell" style="cursor:pointer;text-align:center;user-select:none" data-id="${agent.id}">${isExpanded ? '▼' : '▶'}</td>
           <td>${escapeHtml(agent.name)}</td>
-          <td><code style="font-size:.8rem;color:var(--text-muted)">ck_${escapeHtml(agent.token_prefix)}••••</code></td>
+          <td>${enrollCol}</td>
           <td>${depCount > 0 ? depLabel : '<span style="color:var(--text-muted)">none</span>'}</td>
           <td>${lastContact}</td>
-          <td>${agent.enabled ? '<span class="badge badge-active">enabled</span>' : '<span class="badge badge-expired">disabled</span>'}</td>
+          <td>${statusCol}</td>
           <td>
             <button class="btn btn-sm btn-secondary agent-edit-btn" data-id="${agent.id}">Edit</button>
-            <button class="btn btn-sm btn-secondary agent-regen-btn" data-id="${agent.id}" title="Regenerate token">🔑 Regen</button>
+            <button class="btn btn-sm btn-secondary agent-regen-btn" data-id="${agent.id}" title="Reset enrollment — generates a new enrollment token">🔄 Re-enroll</button>
+            ${agent.enrolled ? `<button class="btn btn-sm btn-secondary agent-renew-cert-btn" data-id="${agent.id}" title="Force the agent to renew its authentication certificate on next heartbeat">🔑 Renew Cert</button>` : ''}
             <button class="btn btn-sm ${agent.enabled ? 'btn-muted' : 'btn-secondary'} agent-toggle-btn" data-id="${agent.id}" data-enabled="${agent.enabled ? 1 : 0}">${agent.enabled ? 'Disable' : 'Enable'}</button>
             <button class="btn btn-sm btn-danger agent-delete-btn" data-id="${agent.id}" data-name="${escapeHtml(agent.name)}">Delete</button>
           </td>
@@ -1343,17 +1428,30 @@
       btn.addEventListener('click', () => openAgentModal(parseInt(btn.dataset.id, 10)));
     });
 
-    // Regenerate token
+    // Regenerate enrollment token (re-enroll)
     $$('.agent-regen-btn', tbody).forEach((btn) => {
       btn.addEventListener('click', async () => {
-        if (!confirm('Regenerate this agent\'s token? The old token will stop working immediately.')) return;
+        if (!confirm('Reset this agent\'s enrollment? The agent will need to re-enroll with the new token.')) return;
         btn.disabled = true;
         try {
           const data = await api('POST', `/api/agents/${btn.dataset.id}/regenerate-token`);
-          showTokenModal(data.token);
-          toast('Token regenerated', 'success');
+          showTokenModal(data.enrollmentToken, data.enrollmentExpiresAt);
+          toast('Enrollment reset — new enrollment token generated', 'success');
         } catch (err) { toast(err.message, 'error'); }
         btn.disabled = false;
+      });
+    });
+
+    // Queue renew_agent_cert action
+    $$('.agent-renew-cert-btn', tbody).forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Force this agent to renew its authentication certificate on the next heartbeat?')) return;
+        btn.disabled = true;
+        try {
+          await api('POST', `/api/agents/${btn.dataset.id}/actions`, { action: 'renew_agent_cert' });
+          toast('Certificate renewal queued — agent will renew on next heartbeat', 'success');
+          loadAgents();
+        } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
       });
     });
 
@@ -1484,9 +1582,22 @@
     nameInput.focus();
   }
 
-  function showTokenModal(token) {
+  function showTokenModal(token, expiresAt) {
     const modal = $('#token-modal');
+    const titleEl = $('#token-modal-title');
+    const hintEl = $('#token-modal-hint');
+    const extraEl = $('#token-modal-extra');
     $('#token-display-value').textContent = token;
+
+    titleEl.textContent = 'Enrollment Token';
+    hintEl.textContent = 'Copy this enrollment token now — it will not be shown again. It expires in 1 hour.';
+    let extraHtml = '<p style="font-size:.85rem;color:var(--text-muted)">Use this token when setting up the CertKeeper agent on the remote host. The agent will exchange it for a client certificate during enrollment.</p>';
+    if (expiresAt) {
+      extraHtml += `<p style="font-size:.8rem;color:var(--warning)">⏳ Expires: ${formatDate(expiresAt)}</p>`;
+    }
+    extraEl.innerHTML = extraHtml;
+    show(extraEl);
+
     show(modal);
   }
 
@@ -1526,7 +1637,9 @@
         } else {
           const data = await api('POST', '/api/agents', { name });
           hide($('#agent-modal'));
-          showTokenModal(data.token);
+          if (data.enrollmentToken) {
+            showTokenModal(data.enrollmentToken, data.enrollmentExpiresAt);
+          }
           toast('Agent created', 'success');
           loadAgents();
         }
@@ -1736,6 +1849,7 @@
     initCloudflareTokenForm();
     initScheduleForm();
     initTlsSettings();
+    initAgentSettingsForm();
     initSettingsTabs();
     initNotificationsTabs();
     initNotifEmailForm();

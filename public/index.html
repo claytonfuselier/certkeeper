@@ -188,7 +188,7 @@
                 <tr>
                   <th style="width:2rem"></th>
                   <th>Name</th>
-                  <th>Token</th>
+                  <th>Enrollment</th>
                   <th>Deployments</th>
                   <th>Last Contact</th>
                   <th>Status</th>
@@ -252,12 +252,13 @@
           <!-- Token display modal (shown once after creation / regeneration) -->
           <div id="token-modal" class="modal-overlay hidden">
             <div class="modal-card">
-              <h3>Agent Token</h3>
-              <p class="setting-hint" style="margin-bottom:.75rem">Copy this token now — it will not be shown again.</p>
+              <h3 id="token-modal-title">Agent Token</h3>
+              <p id="token-modal-hint" class="setting-hint" style="margin-bottom:.75rem">Copy this token now — it will not be shown again.</p>
               <div class="token-display">
                 <code id="token-display-value"></code>
                 <button type="button" class="btn btn-sm btn-secondary" id="token-copy-btn">📋 Copy</button>
               </div>
+              <div id="token-modal-extra" class="hidden" style="margin-top:.75rem"></div>
               <div class="modal-actions" style="margin-top:1rem">
                 <button type="button" class="btn btn-primary" id="token-modal-close">Done</button>
               </div>
@@ -305,6 +306,8 @@
                     <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="expiry_warning" checked /> Expiry Warning</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="error" checked /> Errors</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="revoked" /> Revoked</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="agent_offline" checked /> Agent Offline</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-email-event" value="agent_online" /> Agent Online</label>
                   </div>
                 </div>
                 <div id="notif-email-error" class="error-msg hidden"></div>
@@ -347,6 +350,8 @@
                     <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="expiry_warning" checked /> Expiry Warning</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="error" checked /> Errors</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="revoked" /> Revoked</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="agent_offline" checked /> Agent Offline</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-webhook-event" value="agent_online" /> Agent Online</label>
                   </div>
                 </div>
                 <div id="notif-webhook-error" class="error-msg hidden"></div>
@@ -388,6 +393,8 @@
                     <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="expiry_warning" checked /> Expiry Warning</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="error" checked /> Errors</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="revoked" /> Revoked</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="agent_offline" checked /> Agent Offline</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-pushover-event" value="agent_online" /> Agent Online</label>
                   </div>
                 </div>
                 <div id="notif-pushover-error" class="error-msg hidden"></div>
@@ -437,6 +444,8 @@
                     <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="expiry_warning" checked /> Expiry Warning</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="error" checked /> Errors</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="revoked" /> Revoked</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="agent_offline" checked /> Agent Offline</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-gotify-event" value="agent_online" /> Agent Online</label>
                   </div>
                 </div>
                 <div id="notif-gotify-error" class="error-msg hidden"></div>
@@ -479,6 +488,8 @@
                     <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="expiry_warning" checked /> Expiry Warning</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="error" checked /> Errors</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="revoked" /> Revoked</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="agent_offline" checked /> Agent Offline</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-slack-event" value="agent_online" /> Agent Online</label>
                   </div>
                 </div>
                 <div id="notif-slack-error" class="error-msg hidden"></div>
@@ -516,6 +527,8 @@
                     <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="expiry_warning" checked /> Expiry Warning</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="error" checked /> Errors</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="revoked" /> Revoked</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="agent_offline" checked /> Agent Offline</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-discord-event" value="agent_online" /> Agent Online</label>
                   </div>
                 </div>
                 <div id="notif-discord-error" class="error-msg hidden"></div>
@@ -559,6 +572,8 @@
                     <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="expiry_warning" checked /> Expiry Warning</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="error" checked /> Errors</label>
                     <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="revoked" /> Revoked</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="agent_offline" checked /> Agent Offline</label>
+                    <label class="notif-event-option"><input type="checkbox" name="notif-telegram-event" value="agent_online" /> Agent Online</label>
                   </div>
                 </div>
                 <div id="notif-telegram-error" class="error-msg hidden"></div>
@@ -580,6 +595,7 @@
             <button class="settings-tab" data-settings-tab="letsencrypt">Let's Encrypt</button>
             <button class="settings-tab" data-settings-tab="cloudflare">Cloudflare API</button>
             <button class="settings-tab" data-settings-tab="tls">TLS</button>
+            <button class="settings-tab" data-settings-tab="agents">Agents</button>
             <button class="settings-tab" data-settings-tab="password">Change Password</button>
           </div>
 
@@ -694,7 +710,7 @@
             <!-- Renewal Schedule Card -->
             <div class="card">
               <h3>Renewal Schedule</h3>
-              <p class="setting-hint">Certificates are automatically renewed on two days per week.</p>
+              <p class="setting-hint">Certificates are checked for renewal twice a week. A renewal will only occur if the certificate is within 30 days of expiration.</p>
               <div id="sched-status" style="margin-bottom:.75rem"></div>
               <div id="sched-env-notice" class="error-msg hidden" style="margin-bottom:.75rem">
                 🔒 Renewal schedule is managed via environment variable (RENEWAL_CRON). Changes are disabled.
@@ -813,6 +829,30 @@
               <div id="tls-restart-notice" class="hidden" style="margin-top:.75rem">
                 <p class="setting-hint" style="color:var(--warning)">⚠ Restart the server for the new certificate to take effect.</p>
               </div>
+            </div>
+          </div>
+
+          <!-- Agents Pane -->
+          <div id="settings-agents" class="settings-pane">
+            <div class="card">
+              <h3>Agent Monitoring</h3>
+              <p class="setting-hint">Configure how frequently agents check in and when they should be considered offline.</p>
+              <form id="agent-settings-form">
+                <div class="form-group">
+                  <label for="agent-heartbeat-interval">Heartbeat Interval (minutes)</label>
+                  <input type="number" id="agent-heartbeat-interval" min="1" step="1" value="3" style="width:6rem" />
+                  <small>How often agents should check in. Agents automatically adjust when this changes.</small>
+                </div>
+                <div class="form-group">
+                  <label for="agent-offline-threshold">Offline Threshold (missed heartbeats)</label>
+                  <input type="number" id="agent-offline-threshold" min="1" step="1" value="3" style="width:6rem" />
+                  <small>Number of missed heartbeats before an agent is considered offline. With a 3-minute interval and a threshold of 3, agents are flagged after 9 minutes of silence.</small>
+                </div>
+                <div id="agent-settings-calc" class="setting-hint" style="margin-bottom:.75rem"></div>
+                <div id="agent-settings-error" class="error-msg hidden"></div>
+                <div id="agent-settings-success" class="success-msg hidden"></div>
+                <button type="submit" class="btn btn-primary">Save</button>
+              </form>
             </div>
           </div>
         </div>

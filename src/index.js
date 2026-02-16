@@ -1,5 +1,4 @@
 const express = require('express');
-const http = require('http');
 const https = require('https');
 const session = require('express-session');
 const path = require('path');
@@ -12,8 +11,10 @@ const logger = require('./logger');
 const { initDatabase, getDb } = require('./db');
 const SqliteSessionStore = require('./middleware/sessionStore');
 const scheduler = require('./services/scheduler');
+const agentMonitor = require('./services/agentMonitor');
 const { validateCloudflareToken } = require('./services/cloudflare');
 const { getTlsCredentials } = require('./services/tls');
+const { ensureCA, getCACert } = require('./services/ca');
 
 const authRoutes = require('./routes/auth');
 const certsRoutes = require('./routes/certs');
@@ -84,7 +85,7 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: !config.useHttp,
+    secure: true,
     maxAge: 24 * 60 * 60 * 1000, // 1 day
   },
 }));
@@ -165,33 +166,37 @@ async function start() {
     logger.info('Recovered stuck certificates', { count: stuck.length, ids: stuck.map((r) => r.id) });
   }
 
-  // Start server — HTTPS by default, plain HTTP when USE_HTTP=true
-  let server;
-  if (config.useHttp) {
-    server = http.createServer(app);
-    server.listen(config.port, config.host, (err) => {
-      if (err) {
-        logger.error('Failed to bind', { err });
-        process.exit(1);
-      }
-      logger.info(`Server listening on http://${config.host}:${config.port} (TLS: disabled via USE_HTTP)`);
-      logger.info(`Staging mode: ${config.letsencrypt.staging}`);
-    });
-  } else {
-    const tls = await getTlsCredentials();
-    server = https.createServer({ cert: tls.cert, key: tls.key }, app);
-    server.listen(config.port, config.host, (err) => {
-      if (err) {
-        logger.error('Failed to bind', { err });
-        process.exit(1);
-      }
-      logger.info(`Server listening on https://${config.host}:${config.port} (TLS: ${tls.source})`);
-      logger.info(`Staging mode: ${config.letsencrypt.staging}`);
-    });
-  }
+  // Start HTTPS server with mTLS support
+  const tls = await getTlsCredentials();
+
+  // Initialize the internal CA for mTLS agent auth
+  ensureCA();
+  const caCert = getCACert();
+
+  const server = https.createServer({
+    cert: tls.cert,
+    key: tls.key,
+    // mTLS: request client certs but don't reject connections without them.
+    // Browser users won't have client certs — agent auth middleware handles verification.
+    requestCert: true,
+    rejectUnauthorized: false,
+    // Trust our internal CA for client cert verification
+    ca: [caCert],
+  }, app);
+  server.listen(config.port, config.host, (err) => {
+    if (err) {
+      logger.error('Failed to bind', { err });
+      process.exit(1);
+    }
+    logger.info(`Server listening on https://${config.host}:${config.port} (TLS: ${tls.source}, mTLS: enabled)`);
+    logger.info(`Staging mode: ${config.letsencrypt.staging}`);
+  });
 
   // Start the auto-renewal cron scheduler
   scheduler.start();
+
+  // Start the agent offline monitor
+  agentMonitor.start();
 }
 
 start().catch((err) => {

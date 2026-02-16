@@ -4,9 +4,13 @@ const { getDb } = require('../db');
 const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { hashToken } = require('../middleware/agentAuth');
+const { getCACert } = require('../services/ca');
 
 const router = express.Router();
 router.use(requireAuth);
+
+// Enrollment token lifetime: 1 hour
+const ENROLLMENT_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,14 +42,73 @@ function loadDeployments(db, agentId) {
 
 /** Build a full agent response object. */
 function agentResponse(db, agent) {
-  return {
+  const base = {
     ...agent,
     enabled: !!agent.enabled,
     deployments: loadDeployments(db, agent.id),
   };
+
+  // Enrollment / mTLS status fields
+  base.enrolled = !!agent.cert_fingerprint;
+  base.cert_fingerprint_short = agent.cert_fingerprint
+    ? agent.cert_fingerprint.slice(0, 16)
+    : null;
+  base.cert_expires_at = agent.cert_expires_at || null;
+  base.cert_serial = agent.cert_serial || 0;
+  base.has_enrollment_token = !!agent.enrollment_token_hash;
+  base.enrollment_expires_at = agent.enrollment_expires_at || null;
+  // Check if enrollment token is still valid
+  if (agent.enrollment_token_hash && agent.enrollment_expires_at) {
+    const exp = new Date(agent.enrollment_expires_at + 'Z');
+    base.enrollment_token_expired = exp <= new Date();
+  } else {
+    base.enrollment_token_expired = false;
+  }
+
+  // Agent heartbeat / status fields
+  base.status = agent.status || null;         // 'online', 'offline', or null (unknown)
+  base.next_contact_at = agent.next_contact_at || null;
+  base.config_version = agent.config_version || 0;
+
+  // Determine if agent has the latest config
+  const globalVersionRow = db.get("SELECT value FROM settings WHERE key = 'agent_config_version'");
+  const globalVersion = parseInt(globalVersionRow?.value, 10) || 1;
+  base.config_current = (agent.config_version || 0) >= globalVersion;
+
+  // Pending actions (for admin visibility)
+  let pending = [];
+  if (agent.pending_actions) {
+    try {
+      pending = JSON.parse(agent.pending_actions);
+      if (!Array.isArray(pending)) pending = [];
+    } catch { pending = []; }
+  }
+  base.pending_actions = pending;
+
+  // Remove sensitive fields from response
+  delete base.enrollment_token_hash;
+  delete base.cert_fingerprint;
+  delete base.prev_cert_fingerprint;
+  delete base.prev_cert_expires_at;
+
+  return base;
 }
 
 // ============================= AGENTS ======================================
+
+// ---------------------------------------------------------------------------
+// GET /api/agents/ca-cert — download the CA certificate (for agent trust config)
+// Must be before /:id to avoid Express matching 'ca-cert' as a param.
+// ---------------------------------------------------------------------------
+router.get('/ca-cert', (_req, res) => {
+  try {
+    const caCert = getCACert();
+    res.type('application/x-pem-file').send(caCert);
+  } catch (err) {
+    logger.error('Failed to retrieve CA cert', { error: err.message });
+    res.status(500).json({ error: 'Failed to retrieve CA certificate' });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // GET /api/agents — list all agents with their deployments
@@ -67,8 +130,9 @@ router.get('/:id', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/agents — create a new agent + generate token
-// Returns the raw token ONCE — it cannot be retrieved again.
+// POST /api/agents — create a new agent
+// Body: { name }
+// Always creates an mTLS agent with a 1-hour enrollment token for bootstrap.
 // ---------------------------------------------------------------------------
 router.post('/', (req, res) => {
   const { name } = req.body || {};
@@ -79,15 +143,15 @@ router.post('/', (req, res) => {
 
   const db = getDb();
 
-  // Generate a cryptographically secure token: ck_<64 hex chars>
+  // Generate enrollment token: cke_<64 hex chars> (valid 1 hour)
   const rawSecret = crypto.randomBytes(32).toString('hex');
-  const rawToken = `ck_${rawSecret}`;
-  const tokenHash = hashToken(rawToken);
-  const tokenPrefix = rawSecret.slice(0, 8);
+  const enrollToken = `cke_${rawSecret}`;
+  const enrollHash = hashToken(enrollToken);
+  const expiresAt = new Date(Date.now() + ENROLLMENT_TOKEN_TTL_MS).toISOString().replace('T', ' ').replace('Z', '');
 
   const { lastInsertRowid } = db.run(
-    'INSERT INTO agents (name, token_hash, token_prefix) VALUES (?, ?, ?)',
-    [name.trim(), tokenHash, tokenPrefix],
+    "INSERT INTO agents (name, enrollment_token_hash, enrollment_expires_at) VALUES (?, ?, ?)",
+    [name.trim(), enrollHash, expiresAt],
   );
 
   db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
@@ -97,10 +161,10 @@ router.post('/', (req, res) => {
   logger.info('Agent created', { id: lastInsertRowid, name: name.trim() });
 
   const agent = db.get('SELECT * FROM agents WHERE id = ?', [lastInsertRowid]);
-
   res.status(201).json({
     agent: agentResponse(db, agent),
-    token: rawToken, // shown ONCE
+    enrollmentToken: enrollToken, // shown ONCE
+    enrollmentExpiresAt: expiresAt,
   });
 });
 
@@ -126,30 +190,43 @@ router.patch('/:id', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/agents/:id/regenerate-token — generate a new token, invalidating the old one
+// POST /api/agents/:id/regenerate-token — reset enrollment, generate new enrollment token
+// Clears the existing client cert and generates a fresh 1-hour enrollment token.
 // ---------------------------------------------------------------------------
 router.post('/:id/regenerate-token', (req, res) => {
   const db = getDb();
   const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
 
+  // Generate new enrollment token and clear existing cert (re-enrollment)
   const rawSecret = crypto.randomBytes(32).toString('hex');
-  const rawToken = `ck_${rawSecret}`;
-  const tokenHash = hashToken(rawToken);
-  const tokenPrefix = rawSecret.slice(0, 8);
+  const enrollToken = `cke_${rawSecret}`;
+  const enrollHash = hashToken(enrollToken);
+  const expiresAt = new Date(Date.now() + ENROLLMENT_TOKEN_TTL_MS).toISOString().replace('T', ' ').replace('Z', '');
 
   db.run(
-    "UPDATE agents SET token_hash = ?, token_prefix = ?, updated_at = datetime('now') WHERE id = ?",
-    [tokenHash, tokenPrefix, agent.id],
+    `UPDATE agents SET
+      enrollment_token_hash = ?, enrollment_expires_at = ?,
+      cert_fingerprint = NULL, cert_expires_at = NULL,
+      prev_cert_fingerprint = NULL, prev_cert_expires_at = NULL,
+      cert_serial = cert_serial + 1,
+      status = NULL, next_contact_at = NULL,
+      config_version = 0, pending_actions = NULL,
+      updated_at = datetime('now')
+    WHERE id = ?`,
+    [enrollHash, expiresAt, agent.id],
   );
 
   db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'agent_token_regenerated', JSON.stringify({ id: agent.id, name: agent.name }),
+    'agent_enrollment_reset', JSON.stringify({ id: agent.id, name: agent.name }),
   ]);
 
-  logger.info('Agent token regenerated', { id: agent.id, name: agent.name });
+  logger.info('Agent enrollment reset — new enrollment token generated', { id: agent.id, name: agent.name });
 
-  res.json({ token: rawToken, tokenPrefix });
+  res.json({
+    enrollmentToken: enrollToken,
+    enrollmentExpiresAt: expiresAt,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -171,6 +248,54 @@ router.delete('/:id', (req, res) => {
   logger.info('Agent deleted', { id: agent.id, name: agent.name });
 
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agents/:id/actions — queue an action for an agent
+// Body: { action: "renew_agent_cert" | "update_agent" }
+// The action is stored in pending_actions and delivered on next heartbeat.
+// ---------------------------------------------------------------------------
+router.post('/:id/actions', (req, res) => {
+  const db = getDb();
+  const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+  if (!agent) return res.status(404).json({ error: 'Not found' });
+
+  const { action } = req.body || {};
+  const validActions = ['renew_agent_cert', 'update_agent'];
+
+  if (!action || !validActions.includes(action)) {
+    return res.status(400).json({ error: `action must be one of: ${validActions.join(', ')}` });
+  }
+
+  // Parse existing pending actions and append
+  let pending = [];
+  if (agent.pending_actions) {
+    try {
+      pending = JSON.parse(agent.pending_actions);
+      if (!Array.isArray(pending)) pending = [];
+    } catch {
+      pending = [];
+    }
+  }
+
+  // Don't duplicate the same action
+  if (!pending.includes(action)) {
+    pending.push(action);
+  }
+
+  db.run(
+    "UPDATE agents SET pending_actions = ?, updated_at = datetime('now') WHERE id = ?",
+    [JSON.stringify(pending), agent.id],
+  );
+
+  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+    'agent_action_queued',
+    JSON.stringify({ agentId: agent.id, agentName: agent.name, action }),
+  ]);
+
+  logger.info('Action queued for agent', { agentId: agent.id, agentName: agent.name, action });
+
+  res.json({ ok: true, pending_actions: pending });
 });
 
 // ============================ DEPLOYMENTS ==================================

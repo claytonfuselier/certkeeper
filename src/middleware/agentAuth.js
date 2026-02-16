@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { getDb } = require('../db');
+const logger = require('../logger');
 
 /**
  * Hash a raw token with SHA-256 for comparison against stored hashes.
@@ -11,31 +12,81 @@ function hashToken(raw) {
 }
 
 /**
- * Express middleware that authenticates an agent via Bearer token.
- * Expects header: Authorization: Bearer ck_<token>
+ * Compute the SHA-256 fingerprint of a DER-encoded certificate.
+ */
+function certFingerprintFromDer(derBuffer) {
+  return crypto.createHash('sha256').update(derBuffer).digest('hex');
+}
+
+/**
+ * Try to authenticate an agent via mTLS client certificate.
+ * Returns the agent row if successful, null otherwise.
+ */
+function authenticateViaMTLS(req) {
+  // req.socket.getPeerCertificate() returns the client cert if one was presented
+  const peerCert = req.socket?.getPeerCertificate?.(true);
+  if (!peerCert || !peerCert.raw) return null;
+
+  // Compute fingerprint of the presented client cert
+  const fingerprint = certFingerprintFromDer(peerCert.raw);
+
+  const db = getDb();
+
+  // Try current cert fingerprint first
+  let agent = db.get(
+    "SELECT * FROM agents WHERE cert_fingerprint = ?",
+    [fingerprint],
+  );
+
+  if (agent) {
+    // Check if the current cert has expired
+    if (agent.cert_expires_at) {
+      const expiresAt = new Date(agent.cert_expires_at + 'Z');
+      if (expiresAt <= new Date()) {
+        logger.warn('Agent mTLS cert has expired', { agentId: agent.id, name: agent.name, expiresAt: agent.cert_expires_at });
+        return null;
+      }
+    }
+    return agent;
+  }
+
+  // Fall back to previous cert fingerprint (grace period after renewal)
+  agent = db.get(
+    "SELECT * FROM agents WHERE prev_cert_fingerprint = ?",
+    [fingerprint],
+  );
+
+  if (agent) {
+    // The previous cert is only valid until it naturally expires
+    if (agent.prev_cert_expires_at) {
+      const prevExpiresAt = new Date(agent.prev_cert_expires_at + 'Z');
+      if (prevExpiresAt <= new Date()) {
+        logger.warn('Agent previous mTLS cert has expired', { agentId: agent.id, name: agent.name, expiresAt: agent.prev_cert_expires_at });
+        return null;
+      }
+    }
+    return agent;
+  }
+
+  return null;
+}
+
+/**
+ * Express middleware that authenticates an agent via mTLS client certificate.
  *
  * On success, sets:
  *   req.agent — the agent row from the DB
+ *   req.agentAuthMethod — 'mtls'
  *
  * Also updates last_contact_at and last_contact_ip on the agent row.
  */
 function requireAgentAuth(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  if (!authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid Authorization header. Use: Bearer <token>' });
-  }
+  const agent = authenticateViaMTLS(req);
 
-  const rawToken = authHeader.slice(7).trim();
-  if (!rawToken || !rawToken.startsWith('ck_')) {
-    return res.status(401).json({ error: 'Invalid token format' });
-  }
-
-  const hash = hashToken(rawToken);
-  const db = getDb();
-
-  const agent = db.get('SELECT * FROM agents WHERE token_hash = ?', [hash]);
   if (!agent) {
-    return res.status(401).json({ error: 'Invalid token' });
+    return res.status(401).json({
+      error: 'Authentication failed. Provide a valid mTLS client certificate.',
+    });
   }
 
   if (!agent.enabled) {
@@ -43,8 +94,10 @@ function requireAgentAuth(req, res, next) {
   }
 
   req.agent = agent;
+  req.agentAuthMethod = 'mtls';
 
   // Update last contact (fire-and-forget — don't block the request)
+  const db = getDb();
   const ip = req.ip || req.connection?.remoteAddress || '';
   db.run(
     "UPDATE agents SET last_contact_at = datetime('now'), last_contact_ip = ?, updated_at = datetime('now') WHERE id = ?",
@@ -54,4 +107,59 @@ function requireAgentAuth(req, res, next) {
   next();
 }
 
-module.exports = { requireAgentAuth, hashToken };
+/**
+ * Middleware that authenticates via enrollment token.
+ * Used only for the POST /api/agent/enroll endpoint.
+ *
+ * Expects header: Authorization: Bearer cke_<token>
+ *
+ * On success, sets:
+ *   req.enrollmentAgent — the agent row
+ */
+function requireEnrollmentAuth(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing Authorization header. Use: Bearer <enrollment_token>' });
+  }
+
+  const rawToken = authHeader.slice(7).trim();
+  if (!rawToken || !rawToken.startsWith('cke_')) {
+    return res.status(401).json({ error: 'Invalid enrollment token format. Expected: cke_<token>' });
+  }
+
+  const hash = hashToken(rawToken);
+  const db = getDb();
+
+  const agent = db.get(
+    "SELECT * FROM agents WHERE enrollment_token_hash = ?",
+    [hash],
+  );
+
+  if (!agent) {
+    return res.status(401).json({ error: 'Invalid enrollment token' });
+  }
+
+  if (!agent.enabled) {
+    return res.status(403).json({ error: 'Agent is disabled' });
+  }
+
+  // Check expiry
+  if (agent.enrollment_expires_at) {
+    const expiresAt = new Date(agent.enrollment_expires_at + 'Z');
+    if (expiresAt <= new Date()) {
+      return res.status(401).json({ error: 'Enrollment token has expired. Generate a new one from the admin UI.' });
+    }
+  }
+
+  // Check if agent already has a cert (already enrolled)
+  if (agent.cert_fingerprint) {
+    return res.status(409).json({
+      error: 'Agent is already enrolled. Use the admin UI to reset enrollment if needed.',
+    });
+  }
+
+  req.enrollmentAgent = agent;
+  next();
+}
+
+module.exports = { requireAgentAuth, requireEnrollmentAuth, hashToken };

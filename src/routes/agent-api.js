@@ -5,9 +5,114 @@ const path = require('path');
 const config = require('../config');
 const { getDb } = require('../db');
 const logger = require('../logger');
-const { requireAgentAuth } = require('../middleware/agentAuth');
+const { requireAgentAuth, requireEnrollmentAuth } = require('../middleware/agentAuth');
+const { signCSR, getCACert, CLIENT_CERT_DAYS } = require('../services/ca');
 
 const router = express.Router();
+
+// ---------------------------------------------------------------------------
+// Unauthenticated routes (enrollment uses its own auth middleware)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/enroll — exchange an enrollment token + CSR for a signed
+// client certificate. This is the one-time bootstrap endpoint.
+//
+// Auth: Authorization: Bearer cke_<enrollment_token>
+// Body: { csr: "<PEM-encoded PKCS#10 CSR>" }
+// Response: { certificate, ca_certificate, fingerprint, expires_at, agent }
+// ---------------------------------------------------------------------------
+router.post('/enroll', requireEnrollmentAuth, (req, res) => {
+  const { csr } = req.body || {};
+  const agent = req.enrollmentAgent;
+
+  if (!csr || typeof csr !== 'string' || !csr.includes('BEGIN CERTIFICATE REQUEST')) {
+    return res.status(400).json({
+      error: 'Request body must include a PEM-encoded CSR in the "csr" field.',
+    });
+  }
+
+  try {
+    const { certPem, fingerprint, expiresAt } = signCSR(csr, agent.name);
+    const caCert = getCACert();
+    const db = getDb();
+
+    // Check for fingerprint collision (astronomically unlikely but enforce uniqueness)
+    const expiresAtStr = expiresAt.toISOString().replace('T', ' ').replace('Z', '');
+    const fpCollision = db.get(
+      'SELECT id, name FROM agents WHERE (cert_fingerprint = ? OR prev_cert_fingerprint = ?) AND id != ?',
+      [fingerprint, fingerprint, agent.id],
+    );
+    if (fpCollision) {
+      logger.warn('Enrollment fingerprint collision', { agentId: agent.id, collidesWith: fpCollision.id });
+      return res.status(409).json({
+        error: 'Certificate fingerprint collision. Please retry enrollment with a new key pair and CSR.',
+        retry: true,
+      });
+    }
+
+    // Read heartbeat interval for initial next_contact_at
+    const intervalRow = db.get("SELECT value FROM settings WHERE key = 'agent_heartbeat_interval'");
+    const intervalSeconds = parseInt(intervalRow?.value, 10) || 180;
+    const nextContactAt = new Date(Date.now() + intervalSeconds * 1000)
+      .toISOString().replace('T', ' ').replace('Z', '');
+
+    // Store the cert fingerprint and expiry, burn the enrollment token
+    db.run(
+      `UPDATE agents SET
+        cert_fingerprint = ?,
+        cert_expires_at = ?,
+        enrollment_token_hash = NULL,
+        enrollment_expires_at = NULL,
+        status = 'online',
+        next_contact_at = ?,
+        updated_at = datetime('now')
+      WHERE id = ?`,
+      [fingerprint, expiresAtStr, nextContactAt, agent.id],
+    );
+
+    const ip = req.ip || req.connection?.remoteAddress || '';
+    db.run(
+      "UPDATE agents SET last_contact_at = datetime('now'), last_contact_ip = ?, updated_at = datetime('now') WHERE id = ?",
+      [ip, agent.id],
+    );
+
+    db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+      'agent_enrolled',
+      JSON.stringify({
+        id: agent.id,
+        name: agent.name,
+        fingerprint: fingerprint.slice(0, 16),
+        expiresAt: expiresAtStr,
+      }),
+    ]);
+
+    logger.info('Agent enrolled via mTLS', {
+      id: agent.id,
+      name: agent.name,
+      fingerprint: fingerprint.slice(0, 16),
+    });
+
+    res.json({
+      certificate: certPem,
+      ca_certificate: caCert,
+      fingerprint,
+      expires_at: expiresAtStr,
+      cert_lifetime_days: CLIENT_CERT_DAYS,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+      },
+    });
+  } catch (err) {
+    logger.error('Enrollment failed', { agentId: agent.id, error: err.message });
+    res.status(400).json({ error: `Enrollment failed: ${err.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// All remaining routes require agent auth (mTLS or bearer token)
+// ---------------------------------------------------------------------------
 router.use(requireAgentAuth);
 
 // ---------------------------------------------------------------------------
@@ -154,24 +259,178 @@ router.get('/deployments/:id/bundle', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/agent/renew-cert — renew the agent's mTLS client certificate
+// The agent calls this while its current cert is still valid. It generates
+// a new key pair, sends a CSR, and receives a fresh signed cert.
+//
+// Auth: mTLS (current client cert) — only available to mTLS agents
+// Body: { csr: "<PEM-encoded PKCS#10 CSR>" }
+// Response: { certificate, ca_certificate, fingerprint, expires_at }
+// ---------------------------------------------------------------------------
+router.post('/renew-cert', (req, res) => {
+  const { csr } = req.body || {};
+  const agent = req.agent;
+
+  if (!csr || typeof csr !== 'string' || !csr.includes('BEGIN CERTIFICATE REQUEST')) {
+    return res.status(400).json({
+      error: 'Request body must include a PEM-encoded CSR in the "csr" field.',
+    });
+  }
+
+  try {
+    const { certPem, fingerprint, expiresAt } = signCSR(csr, agent.name);
+    const caCert = getCACert();
+    const db = getDb();
+
+    const expiresAtStr = expiresAt.toISOString().replace('T', ' ').replace('Z', '');
+
+    // Check for fingerprint collision before updating
+    const fpCollision = db.get(
+      'SELECT id, name FROM agents WHERE (cert_fingerprint = ? OR prev_cert_fingerprint = ?) AND id != ?',
+      [fingerprint, fingerprint, agent.id],
+    );
+    if (fpCollision) {
+      logger.warn('Renewal fingerprint collision', { agentId: agent.id, collidesWith: fpCollision.id });
+      return res.status(409).json({
+        error: 'Certificate fingerprint collision. Please retry with a new key pair and CSR.',
+        retry: true,
+      });
+    }
+
+    // Preserve the old fingerprint so both certs are accepted until the old one expires
+    db.run(
+      `UPDATE agents SET
+        prev_cert_fingerprint = cert_fingerprint,
+        prev_cert_expires_at = cert_expires_at,
+        cert_fingerprint = ?,
+        cert_expires_at = ?,
+        cert_serial = cert_serial + 1,
+        updated_at = datetime('now')
+      WHERE id = ?`,
+      [fingerprint, expiresAtStr, agent.id],
+    );
+
+    db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+      'agent_cert_renewed',
+      JSON.stringify({
+        id: agent.id,
+        name: agent.name,
+        fingerprint: fingerprint.slice(0, 16),
+        expiresAt: expiresAtStr,
+      }),
+    ]);
+
+    logger.info('Agent mTLS certificate renewed', {
+      id: agent.id,
+      name: agent.name,
+      fingerprint: fingerprint.slice(0, 16),
+    });
+
+    res.json({
+      certificate: certPem,
+      ca_certificate: caCert,
+      fingerprint,
+      expires_at: expiresAtStr,
+      cert_lifetime_days: CLIENT_CERT_DAYS,
+    });
+  } catch (err) {
+    logger.error('Agent cert renewal failed', { agentId: agent.id, error: err.message });
+    res.status(400).json({ error: `Certificate renewal failed: ${err.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/agent/heartbeat — agent check-in / keepalive
+//
+// The agent sends its current config_version so the server knows whether
+// the agent has picked up the latest settings. The response includes the
+// latest config_version, heartbeat_interval, and any pending actions.
+//
+// If the agent was previously offline, this transitions it back to 'online'
+// and logs the state change.
 // ---------------------------------------------------------------------------
 router.post('/heartbeat', (req, res) => {
   const db = getDb();
-  const deploymentCount = db.get(
-    'SELECT COUNT(*) AS n FROM deployments WHERE agent_id = ?',
-    [req.agent.id],
+  const agent = req.agent;
+  const agentConfigVersion = typeof req.body?.config_version === 'number' ? req.body.config_version : 0;
+
+  // Read global agent monitoring settings
+  const intervalRow = db.get("SELECT value FROM settings WHERE key = 'agent_heartbeat_interval'");
+  const globalVersion = db.get("SELECT value FROM settings WHERE key = 'agent_config_version'");
+  const intervalSeconds = parseInt(intervalRow?.value, 10) || 180;
+  const configVersion = parseInt(globalVersion?.value, 10) || 1;
+
+  // Calculate next expected contact time
+  const nextContactAt = new Date(Date.now() + intervalSeconds * 1000)
+    .toISOString().replace('T', ' ').replace('Z', '');
+
+  // Detect state transition: offline → online
+  const wasOffline = agent.status === 'offline';
+  if (wasOffline) {
+    logger.info('Agent came back online', { id: agent.id, name: agent.name });
+    db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+      'agent_online',
+      JSON.stringify({ id: agent.id, name: agent.name }),
+    ]);
+    // TODO: trigger agent_online notification via notification service
+  }
+
+  // Read and clear pending actions
+  let actions = [];
+  if (agent.pending_actions) {
+    try {
+      actions = JSON.parse(agent.pending_actions);
+      if (!Array.isArray(actions)) actions = [];
+    } catch {
+      actions = [];
+    }
+  }
+
+  // Update agent state
+  db.run(
+    `UPDATE agents SET
+      status = 'online',
+      next_contact_at = ?,
+      config_version = ?,
+      pending_actions = NULL,
+      updated_at = datetime('now')
+    WHERE id = ?`,
+    [nextContactAt, agentConfigVersion, agent.id],
   );
 
-  res.json({
+  const deploymentCount = db.get(
+    'SELECT COUNT(*) AS n FROM deployments WHERE agent_id = ?',
+    [agent.id],
+  );
+
+  const response = {
     ok: true,
     agent: {
-      id: req.agent.id,
-      name: req.agent.name,
+      id: agent.id,
+      name: agent.name,
     },
     deployments: deploymentCount?.n || 0,
     server_time: new Date().toISOString(),
-  });
+    heartbeat_interval: intervalSeconds,
+    config_version: configVersion,
+    actions,
+  };
+
+  // Include cert expiry so the agent can decide when to renew
+  if (agent.cert_expires_at) {
+    response.cert_expires_at = agent.cert_expires_at;
+  }
+
+  res.json(response);
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/time — server clock endpoint for agent time-sync
+// Returns the server's current time so agents can detect clock skew and
+// base expiry calculations on server time rather than their local clock.
+// ---------------------------------------------------------------------------
+router.get('/time', (_req, res) => {
+  res.json({ server_time: new Date().toISOString() });
 });
 
 module.exports = router;

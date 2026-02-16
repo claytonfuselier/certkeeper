@@ -39,6 +39,7 @@ src/
     ├── certbot.js       # Certbot CLI wrapper (child_process) with error classification
     ├── cloudflare.js    # CF API token validation
     ├── scheduler.js     # Randomized twice-weekly renewal cron
+    ├── agentMonitor.js  # Agent liveness cron (every 1 min, offline detection + notifications)
     └── tls.js           # HTTPS cert management (self-signed / custom / managed)
 
 public/
@@ -58,7 +59,6 @@ public/
 - **Certbot operations are async.** `issueCertificate()` and `renewCertificate()` spawn child processes and return promises. The route returns 202 immediately; the frontend polls for completion.
 - **Error responses** use `{ error: "message" }` JSON. Structured certbot errors use `{ title, detail, link }` stored as JSON in `error_message` column.
 - **Audit logging** via `audit_log` table — insert a row for significant actions.
-- **`USE_HTTP=true`** disables HTTPS, skips self-signed cert generation, and disables TLS settings in the UI. Cookie `secure` flag also adapts.
 
 ### Frontend
 
@@ -76,7 +76,7 @@ public/
 - **`settings`** — `key, value` (stores email, CF token, TLS domain, renewal schedule)
 - **`audit_log`** — `id, action, details (JSON), created_at`
 - **`sessions`** — express-session store
-- **`agents`** — `id, name, token_hash (SHA-256), token_prefix (first 8 hex chars for UI display), enabled, last_contact_at, last_contact_ip, created_at, updated_at`
+- **`agents`** — `id, name, enrollment_token_hash, enrollment_expires_at, cert_fingerprint (SHA-256, UNIQUE), cert_expires_at, prev_cert_fingerprint (UNIQUE), prev_cert_expires_at, cert_serial, enabled, status (online/offline/NULL), next_contact_at, config_version, pending_actions (JSON), last_contact_at, last_contact_ip, created_at, updated_at`
 - **`deployments`** — `id, agent_id (FK → agents, CASCADE), certificate_id (FK → certificates, CASCADE), name, enabled, last_deployed_at, last_deployed_hash, created_at, updated_at` — the unit of work that ties an agent to a certificate
 
 ### Certificate Lifecycle
@@ -100,21 +100,31 @@ public/
 - **Self-signed (default):** Auto-generated via `selfsigned` package, stored in `data/tls/`, auto-renewed when expired.
 - **Custom PEM:** User uploads cert + key via settings UI.
 - **Managed cert:** User selects an issued Let's Encrypt cert; files are copied to `data/tls/` and auto-refreshed on renewal.
-- **HTTP mode (`USE_HTTP=true`):** No TLS, all TLS settings disabled.
 
 ### Agents & Deployments
 
-Agents are remote systems (e.g. a future "certkeeper-agent" CLI) that pull certificates from CertKeeper via a token-authenticated API.
+Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates from CertKeeper. All agents use **mTLS** (mutual TLS) authentication with a one-time enrollment token for initial bootstrap.
 
-- **Agents** represent a remote host. Creating an agent generates a `ck_<64 hex>` bearer token (shown once, stored as SHA-256 hash). Agents authenticate via `Authorization: Bearer ck_...` header.
+- **Agents** represent a remote host. Creating an agent generates a one-time **enrollment token** (`cke_<64 hex>`, valid 1 hour). The agent exchanges the token + a locally-generated CSR at `POST /api/agent/enroll` to receive a client certificate signed by CertKeeper's internal CA. After enrollment, all auth is via the client certificate.
+- **Internal CA** (`src/services/ca.js`) generates a 4096-bit RSA root CA on first use (stored in `data/ca/`). Signs agent CSRs with 45-day client certificates. Pure Node.js crypto — no openssl dependency.
+- **Enrollment flow:** Agent generates key pair → creates CSR → `POST /api/agent/enroll` with enrollment token → receives signed cert + CA cert → enrollment token is burned.
+- **Cert renewal:** Agent calls `POST /api/agent/renew-cert` (authenticated by current cert) with a new CSR → receives a fresh cert. The old fingerprint is preserved in `prev_cert_fingerprint` and both certs are accepted until the old one naturally expires. Fully automated.
+- **Re-enrollment:** If an agent's cert expires (e.g. prolonged outage), the admin can click "Re-enroll" to generate a new enrollment token. The agent re-registers with a fresh key pair. Deployments and all configuration are preserved.
+- **HTTPS server** is configured with `requestCert: true, rejectUnauthorized: false` — requests client certs but doesn't reject browsers without them. Agent middleware verifies the cert fingerprint.
 - **Deployments** tie an agent to a certificate. An agent can have many deployments. Each deployment has a name, references a certificate, and tracks `last_deployed_at` / `last_deployed_hash` so the agent knows when a cert has been renewed.
-- **Agent middleware** (`agentAuth.js`) hashes the bearer token, looks up the agent row, updates `last_contact_at`/`last_contact_ip`, and sets `req.agent`.
+- **Agent middleware** (`agentAuth.js`) authenticates agents via mTLS client certificate fingerprint. Sets `req.agent` and `req.agentAuthMethod`.
 - **Admin routes** (`/api/agents`) are session-authed and provide full CRUD for agents and their deployments.
-- **Agent-facing routes** (`/api/agent`) are token-authed:
+- **Agent-facing routes** (`/api/agent`) are mTLS-authed:
+  - `POST /api/agent/enroll` — enrollment-token-authed CSR signing (one-time bootstrap)
+  - `POST /api/agent/renew-cert` — mTLS-authed cert renewal
   - `GET /api/agent/deployments` — returns the agent's deployments with cert metadata + `content_hash` (SHA-256 of fullchain.pem, truncated to 16 hex chars) so the agent can detect renewals without downloading.
   - `GET /api/agent/deployments/:id/bundle` — returns cert + key PEM files for a specific deployment; updates `last_deployed_at`/`last_deployed_hash`.
-  - `POST /api/agent/heartbeat` — keepalive, returns deployment count.
-- **Frontend** — Agents page shows an expandable table: each agent row expands to reveal its deployments with inline add/enable/disable/delete controls. Agent create/edit is a simple name-only modal; deployments are added via a separate modal with name + certificate dropdown.
+  - `POST /api/agent/heartbeat` — keepalive with config versioning. Returns deployment count, cert expiry, `heartbeat_interval` (seconds), `config_version`, and `actions` array (server→agent commands). Agent sends `{ config_version }` in request body to acknowledge settings.
+  - `GET /api/agent/time` — unauthenticated server clock for agent time-skew detection.
+- **Heartbeat monitoring:** Agents check in every `agent_heartbeat_interval` seconds (default 180 = 3 min, configurable in Settings → Agents). The server calculates `next_contact_at` on each heartbeat. A cron job runs every minute and flags agents as `offline` when `next_contact_at + (interval × threshold)` has passed. Default threshold: 3 missed heartbeats. State transitions (`agent_offline` / `agent_online`) are logged and trigger notifications.
+- **Config versioning:** A global `agent_config_version` integer is incremented when agent-related settings change. The heartbeat response includes the latest version; the agent acknowledges it in the next heartbeat request. The agents table stores each agent's acknowledged `config_version`. The UI shows a blue badge when an agent is online but hasn't picked up the latest config.
+- **Actions:** Admins can queue actions for agents via `POST /api/agents/:id/actions`. Actions are stored in `pending_actions` (JSON array) on the agent row and delivered in the heartbeat response, then cleared. Supported actions: `renew_agent_cert` (force cert renewal), `update_agent` (stub for future self-update).
+- **Frontend** — Agents page shows an expandable table: each agent row expands to reveal its deployments with inline add/enable/disable/delete controls. Agent creation generates an enrollment token shown once. Deployments are added via a separate modal with name + certificate dropdown. Status badges: green (online + current config), blue (online + stale config), red (offline), gray (unknown/not enrolled).
 
 ## Guidelines
 

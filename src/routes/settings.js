@@ -49,8 +49,7 @@ router.get('/', (_req, res) => {
       source: envEmail ? 'env' : dbEmail ? 'database' : 'none',
     },
     tls: {
-      source: config.useHttp ? 'disabled' : getTlsSource(),
-      httpMode: config.useHttp,
+      source: getTlsSource(),
     },
     schedule: scheduler.getScheduleInfo(),
     staging: config.letsencrypt.staging,
@@ -164,10 +163,6 @@ router.put('/email', (req, res) => {
 // PUT /api/settings/tls — upload a custom cert + key, or use a managed cert
 // ---------------------------------------------------------------------------
 router.put('/tls', (req, res) => {
-  if (config.useHttp) {
-    return res.status(400).json({ error: 'TLS settings are disabled when USE_HTTP=true. The server is running in plain HTTP mode.' });
-  }
-
   const { certPem, keyPem, managedDomain, action } = req.body || {};
 
   // Revert to self-signed
@@ -271,16 +266,91 @@ router.put('/schedule', (req, res) => {
 // GET /api/settings/tls/managed — list active managed certs available for use
 // ---------------------------------------------------------------------------
 router.get('/tls/managed', (_req, res) => {
-  if (config.useHttp) {
-    return res.status(400).json({ error: 'TLS settings are disabled when USE_HTTP=true.' });
-  }
-
   const db = getDb();
   const certs = db.all("SELECT id, domains, status FROM certificates WHERE status = 'active' ORDER BY domains");
   res.json(certs.map((c) => ({
     id: c.id,
     domains: JSON.parse(c.domains),
   })));
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/settings/agents — get agent monitoring settings
+// ---------------------------------------------------------------------------
+router.get('/agents', (_req, res) => {
+  const db = getDb();
+  const intervalRow = db.get("SELECT value FROM settings WHERE key = 'agent_heartbeat_interval'");
+  const thresholdRow = db.get("SELECT value FROM settings WHERE key = 'agent_offline_threshold'");
+  const versionRow = db.get("SELECT value FROM settings WHERE key = 'agent_config_version'");
+
+  res.json({
+    heartbeat_interval: parseInt(intervalRow?.value, 10) || 180,
+    offline_threshold: parseInt(thresholdRow?.value, 10) || 3,
+    config_version: parseInt(versionRow?.value, 10) || 1,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/settings/agents — update agent monitoring settings
+// Increments config_version so agents pick up the change on next heartbeat.
+// ---------------------------------------------------------------------------
+router.put('/agents', (req, res) => {
+  const { heartbeat_interval_minutes, offline_threshold } = req.body || {};
+
+  if (typeof heartbeat_interval_minutes !== 'number' || !Number.isInteger(heartbeat_interval_minutes) || heartbeat_interval_minutes < 1) {
+    return res.status(400).json({ error: 'heartbeat_interval_minutes must be an integer ≥ 1' });
+  }
+  if (typeof offline_threshold !== 'number' || !Number.isInteger(offline_threshold) || offline_threshold < 1) {
+    return res.status(400).json({ error: 'offline_threshold must be an integer ≥ 1' });
+  }
+
+  const db = getDb();
+  const intervalSeconds = heartbeat_interval_minutes * 60;
+
+  // Upsert heartbeat interval
+  const existingInterval = db.get("SELECT key FROM settings WHERE key = 'agent_heartbeat_interval'");
+  if (existingInterval) {
+    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'agent_heartbeat_interval'", [String(intervalSeconds)]);
+  } else {
+    db.run("INSERT INTO settings (key, value) VALUES ('agent_heartbeat_interval', ?)", [String(intervalSeconds)]);
+  }
+
+  // Upsert offline threshold
+  const existingThreshold = db.get("SELECT key FROM settings WHERE key = 'agent_offline_threshold'");
+  if (existingThreshold) {
+    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'agent_offline_threshold'", [String(offline_threshold)]);
+  } else {
+    db.run("INSERT INTO settings (key, value) VALUES ('agent_offline_threshold', ?)", [String(offline_threshold)]);
+  }
+
+  // Increment global config version — agents will pick this up on next heartbeat
+  const versionRow = db.get("SELECT value FROM settings WHERE key = 'agent_config_version'");
+  const currentVersion = parseInt(versionRow?.value, 10) || 1;
+  const newVersion = currentVersion + 1;
+  const existingVersion = db.get("SELECT key FROM settings WHERE key = 'agent_config_version'");
+  if (existingVersion) {
+    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'agent_config_version'", [String(newVersion)]);
+  } else {
+    db.run("INSERT INTO settings (key, value) VALUES ('agent_config_version', ?)", [String(newVersion)]);
+  }
+
+  logger.info('Agent monitoring settings updated', {
+    heartbeat_interval: intervalSeconds,
+    offline_threshold,
+    config_version: newVersion,
+  });
+
+  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+    'agent_settings_updated',
+    JSON.stringify({ heartbeat_interval: intervalSeconds, offline_threshold, config_version: newVersion }),
+  ]);
+
+  res.json({
+    ok: true,
+    heartbeat_interval: intervalSeconds,
+    offline_threshold,
+    config_version: newVersion,
+  });
 });
 
 // ---------------------------------------------------------------------------
