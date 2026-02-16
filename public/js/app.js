@@ -88,6 +88,19 @@
   let _hasCloudflareToken = false;
   let _cloudflareSource = 'none'; // 'env' | 'database' | 'none'
   let _credentialsSource = 'database'; // 'env' | 'database'
+  let _tlsSource = 'self-signed'; // 'self-signed' | 'custom'
+  let _agentCount = 0;
+  let _serviceCertId = null; // certificate ID used for server TLS, or null
+
+  /** Refresh TLS / agent global state from settings API (lightweight). */
+  async function refreshTlsState() {
+    try {
+      const data = await api('GET', '/api/settings');
+      _tlsSource = data.tls?.source || 'self-signed';
+      _agentCount = data.agents?.count || 0;
+      _serviceCertId = data.tls?.serviceCertId || null;
+    } catch { /* best effort — globals retain previous values */ }
+  }
 
   function updateDns01State() {
     const warning = $('#dns01-no-token');
@@ -175,6 +188,7 @@
 
   async function loadCertificates() {
     try {
+      await refreshTlsState();
       const certs = await api('GET', '/api/certs');
       const tbody = $('#certs-table tbody');
       const empty = $('#certs-empty');
@@ -194,6 +208,7 @@
         const inProgress = cert.status === 'issuing' || cert.status === 'renewing';
         if (inProgress) hasInProgress = true;
 
+        const isServiceCert = _serviceCertId !== null && cert.id === _serviceCertId;
         const canRenew = cert.status === 'active' || cert.status === 'expired';
         const canRetry = cert.status === 'error';
         const canRevoke = cert.certbot_name && !['issuing', 'renewing', 'revoked'].includes(cert.status);
@@ -201,10 +216,13 @@
         const isRevoked = cert.status === 'revoked';
         const hasError = cert.status === 'error' && cert.error_message;
 
+        // Service cert indicator
+        const serviceBadge = isServiceCert ? ' <span class="badge" style="background:var(--primary);color:#fff;font-size:.7rem" title="This certificate is used for the server\'s TLS">TLS</span>' : '';
+
         const tr = document.createElement('tr');
         if (hasError) tr.classList.add('cert-error-row');
         tr.innerHTML = `
-          <td>${cert.domains.map((d) => `<code>${d}</code>`).join(' ')}</td>
+          <td>${cert.domains.map((d) => `<code>${d}</code>`).join(' ')}${serviceBadge}</td>
           <td>${statusBadge(cert.status, cert.staging)}${inProgress ? ' <span class="spinner"></span>' : ''}${hasError ? ' <button class="btn-error-toggle" title="Show error details">ⓘ</button>' : ''}</td>
           <td>${formatDate(cert.expires_at)}</td>
           <td>
@@ -217,8 +235,10 @@
             <button class="btn btn-sm btn-secondary renew-btn" data-id="${cert.id}" ${canRenew ? '' : 'disabled'}>Renew</button>
             ${canRetry ? `<button class="btn btn-sm btn-secondary retry-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}">Retry</button>` : ''}
             ${isRevoked ? `<button class="btn btn-sm btn-secondary reissue-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}">Reissue</button>` : ''}
-            ${canRevoke ? `<button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}">Revoke</button>` : ''}
-            ${canRemove ? `<button class="btn btn-sm ${isRevoked || !canRevoke ? 'btn-danger' : 'btn-muted'} remove-btn" data-id="${cert.id}" title="Remove from tracking${canRevoke ? ' without revoking' : ''}">Remove</button>` : ''}
+            ${canRevoke && !isServiceCert ? `<button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}">Revoke</button>` : ''}
+            ${canRevoke && isServiceCert ? `<button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}" disabled title="Switch TLS to a different certificate before revoking">Revoke</button>` : ''}
+            ${canRemove && !isServiceCert ? `<button class="btn btn-sm ${isRevoked || !canRevoke ? 'btn-danger' : 'btn-muted'} remove-btn" data-id="${cert.id}" title="Remove from tracking${canRevoke ? ' without revoking' : ''}">Remove</button>` : ''}
+            ${canRemove && isServiceCert ? `<button class="btn btn-sm ${isRevoked || !canRevoke ? 'btn-danger' : 'btn-muted'} remove-btn" data-id="${cert.id}" disabled title="Switch TLS to a different certificate before removing">Remove</button>` : ''}
           </td>
         `;
         tbody.appendChild(tr);
@@ -431,6 +451,10 @@
       $('#st-port').textContent = srv.port || '—';
 
       const tlsSource = data.tls?.source || 'self-signed';
+      _tlsSource = tlsSource;
+      _agentCount = data.agents?.count || 0;
+      _serviceCertId = data.tls?.serviceCertId || null;
+
       $('#st-tls').innerHTML = tlsSource === 'custom'
           ? '<span class="badge badge-active">Custom / Managed</span>'
           : '<span class="badge badge-pending">Self-signed</span>';
@@ -555,6 +579,20 @@
       }
       const tlsModeSelect = $('#tls-mode');
       tlsModeSelect.value = tlsSource === 'custom' ? 'custom' : 'self-signed';
+
+      // Disable switching to self-signed when agents exist
+      const selfSignedOpt = tlsModeSelect.querySelector('option[value="self-signed"]');
+      const selfSignedWarning = $('#tls-selfsigned-warning');
+      if (_agentCount > 0) {
+        selfSignedOpt.disabled = true;
+        selfSignedOpt.textContent = 'Self-signed (unavailable — agents exist)';
+        show(selfSignedWarning);
+      } else {
+        selfSignedOpt.disabled = false;
+        selfSignedOpt.textContent = 'Self-signed (default)';
+        hide(selfSignedWarning);
+      }
+
       updateTlsSections();
 
       // ---- Schedule pane ----
@@ -1255,10 +1293,24 @@
 
   async function loadAgents() {
     try {
+      await refreshTlsState();
       const agents = await api('GET', '/api/agents');
       const tbody = $('#agents-table tbody');
       const empty = $('#agents-empty');
+      const newAgentBtn = $('#new-agent-btn');
+      const tlsWarning = $('#agents-tls-warning');
       tbody.innerHTML = '';
+
+      // Disable agent creation when server TLS is self-signed
+      if (_tlsSource === 'self-signed') {
+        newAgentBtn.disabled = true;
+        newAgentBtn.title = 'Agent creation requires a managed or custom TLS certificate';
+        show(tlsWarning);
+      } else {
+        newAgentBtn.disabled = false;
+        newAgentBtn.title = '';
+        hide(tlsWarning);
+      }
 
       if (agents.length === 0) {
         show(empty);
@@ -1541,11 +1593,23 @@
     certSelect.innerHTML = '<option value="">— Select a certificate —</option>';
     try {
       const certs = await api('GET', '/api/certs');
+      let available = 0;
       for (const cert of certs) {
+        // Skip the certificate used for server TLS — deploying it would allow agents to impersonate the server
+        if (_serviceCertId !== null && cert.id === _serviceCertId) continue;
+
         const domains = cert.domains.join(', ');
         const opt = document.createElement('option');
         opt.value = cert.id;
         opt.textContent = `${domains} (${cert.status}${cert.staging ? ' — staging' : ''})`;
+        certSelect.appendChild(opt);
+        available++;
+      }
+      if (available === 0 && certs.length > 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No eligible certificates (server TLS cert excluded)';
+        opt.disabled = true;
         certSelect.appendChild(opt);
       }
     } catch {

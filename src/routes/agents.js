@@ -5,6 +5,7 @@ const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { hashToken } = require('../middleware/agentAuth');
 const { getCACert } = require('../services/ca');
+const { getTlsSource, getServiceDomain } = require('../services/tls');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -136,6 +137,13 @@ router.get('/:id', (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/', (req, res) => {
   const { name } = req.body || {};
+
+  // Block agent creation when server TLS is self-signed
+  if (getTlsSource() === 'self-signed') {
+    return res.status(400).json({
+      error: 'Cannot create agents while the server is using a self-signed TLS certificate. Agents cannot verify the server identity during enrollment. Switch to a managed or custom certificate in Settings → TLS first.',
+    });
+  }
 
   if (!name || typeof name !== 'string' || name.trim().length < 1) {
     return res.status(400).json({ error: 'Agent name is required' });
@@ -333,6 +341,17 @@ router.post('/:id/deployments', (req, res) => {
     return res.status(404).json({ error: 'Certificate not found' });
   }
 
+  // Block deploying the certificate that is currently used for server TLS
+  const serviceDomain = getServiceDomain();
+  if (serviceDomain) {
+    const serviceCert = db.get("SELECT id FROM certificates WHERE certbot_name = ?", [serviceDomain]);
+    if (serviceCert && serviceCert.id === cert.id) {
+      return res.status(400).json({
+        error: 'This certificate is currently used for the server\'s TLS and cannot be deployed to agents. Deploying it would allow agents to impersonate the server.',
+      });
+    }
+  }
+
   const { lastInsertRowid } = db.run(
     'INSERT INTO deployments (agent_id, certificate_id, name) VALUES (?, ?, ?)',
     [agent.id, cert.id, name.trim()],
@@ -368,6 +387,18 @@ router.patch('/:agentId/deployments/:depId', (req, res) => {
   if (typeof certificateId === 'number') {
     const cert = db.get('SELECT id FROM certificates WHERE id = ?', [certificateId]);
     if (!cert) return res.status(404).json({ error: 'Certificate not found' });
+
+    // Block deploying the certificate that is currently used for server TLS
+    const serviceDomain = getServiceDomain();
+    if (serviceDomain) {
+      const serviceCert = db.get("SELECT id FROM certificates WHERE certbot_name = ?", [serviceDomain]);
+      if (serviceCert && serviceCert.id === cert.id) {
+        return res.status(400).json({
+          error: 'This certificate is currently used for the server\'s TLS and cannot be deployed to agents. Deploying it would allow agents to impersonate the server.',
+        });
+      }
+    }
+
     db.run("UPDATE deployments SET certificate_id = ?, updated_at = datetime('now') WHERE id = ?", [cert.id, dep.id]);
   }
   if (typeof enabled === 'boolean') {

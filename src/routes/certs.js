@@ -3,7 +3,7 @@ const config = require('../config');
 const { getDb } = require('../db');
 const logger = require('../logger');
 const certbot = require('../services/certbot');
-const { refreshServiceCert } = require('../services/tls');
+const { refreshServiceCert, getServiceDomain } = require('../services/tls');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -190,6 +190,14 @@ router.delete('/:id', async (req, res) => {
     const db = getDb();
     const cert = db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
     if (!cert) return res.status(404).json({ error: 'Not found' });
+
+    // Block revoke/remove of the certificate currently used for server TLS
+    const serviceDomain = getServiceDomain();
+    if (serviceDomain && cert.certbot_name === serviceDomain) {
+      return res.status(409).json({
+        error: 'This certificate is currently used for the server\'s TLS. Switch to a different certificate in Settings → TLS before revoking or removing it.',
+      });
+    }
 
     const action = req.query.action; // 'remove' | 'revoke' | undefined
 

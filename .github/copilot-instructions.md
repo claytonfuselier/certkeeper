@@ -105,6 +105,17 @@ public/
 - **Custom PEM:** User uploads cert + key via settings UI.
 - **Managed cert:** User selects an issued Let's Encrypt cert; files are copied to `data/tls/` and auto-refreshed on renewal.
 
+### TLS / Agent Safety Guards
+
+Four protections enforce separation between server TLS and agent infrastructure:
+
+1. **No agents on self-signed:** Agent creation is blocked (`POST /api/agents` → 400) when the server uses a self-signed TLS certificate. Agents cannot verify the server's identity during enrollment. The UI disables the "New Agent" button with an explanatory warning banner.
+2. **No self-signed while agents exist:** Switching TLS back to self-signed (`PUT /api/settings/tls` with `action: reset` → 409) is blocked when any agents exist. The UI disables the self-signed option in the TLS mode dropdown with a warning message.
+3. **No revoke/remove of the active TLS cert:** Revoking or removing the certificate currently used for server TLS (`DELETE /api/certs/:id` → 409) is blocked. The UI disables the Revoke and Remove buttons on the TLS cert with tooltip explanations ("Switch TLS to a different certificate first"). The cert shows a "TLS" badge in the certificate list.
+4. **No deploying the TLS cert to agents:** Creating or updating a deployment with the server's TLS certificate (`POST/PATCH deployments` → 400) is blocked. The UI excludes it from the deployment certificate dropdown entirely. This prevents agents from obtaining the server's private key, which would let them impersonate the server.
+
+`GET /api/settings` returns `tls.serviceDomain`, `tls.serviceCertId`, and `agents.count` so the frontend can enforce all of these client-side as disabled states + messaging.
+
 ### Notifications
 
 Notification configs are stored in `settings` as JSON values keyed by `notif_<channel>`. Each channel config includes an `enabled` flag, channel-specific connection details, and an `events` array.

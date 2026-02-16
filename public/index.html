@@ -173,6 +173,12 @@
             </div>
           </div>
 
+          <!-- Self-signed TLS warning -->
+          <div id="agents-tls-warning" class="hidden" style="background:var(--bg-input);border:1px solid var(--warning);border-radius:var(--radius);padding:.75rem 1rem;margin-bottom:1rem;color:var(--warning);font-size:.9rem">
+            ⚠ Agent creation is disabled while the server uses a self-signed TLS certificate. Agents cannot verify the server's identity during enrollment.
+            <a href="#settings" style="color:var(--primary);margin-left:.25rem">Configure TLS →</a>
+          </div>
+
           <!-- Agent list -->
           <div class="card">
             <table class="table" id="agents-table">
@@ -790,6 +796,9 @@
                   <option value="managed">Use a managed certificate</option>
                   <option value="custom">Upload custom certificate</option>
                 </select>
+                <div id="tls-selfsigned-warning" class="hidden" style="margin-top:.4rem;font-size:.85rem;color:var(--warning)">
+                  ⚠ Self-signed is unavailable while agents exist — agents cannot verify the server's identity with a self-signed certificate.
+                </div>
               </div>
 
               <!-- Managed cert selector -->

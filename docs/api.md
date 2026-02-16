@@ -282,6 +282,8 @@ Delete a certificate. Behavior depends on the `action` query parameter:
 { "ok": true }
 ```
 
+**Errors:** `409` if the certificate is currently used for server TLS (switch TLS to a different certificate first)
+
 ---
 
 ### POST /api/certs/sync
@@ -325,7 +327,12 @@ Retrieve current settings, system status, and config source information.
     "source": "database"
   },
   "tls": {
-    "source": "self-signed"
+    "source": "self-signed",
+    "serviceDomain": null,
+    "serviceCertId": null
+  },
+  "agents": {
+    "count": 0
   },
   "schedule": { ... },
   "staging": false,
@@ -430,6 +437,8 @@ Three modes of operation:
 ```
 
 > `restart: true` indicates the server needs a restart for new TLS certs to take effect.
+
+**Errors:** `409` when reverting to self-signed (`action: "reset"`) while agents exist. Agents cannot verify the server's identity with a self-signed certificate.
 
 ---
 
@@ -793,6 +802,8 @@ Create a new agent. Generates a one-time enrollment token.
 
 > The `enrollmentToken` is shown **once** and cannot be retrieved again. The token expires in 1 hour.
 
+**Errors:** `400` if the server is using a self-signed TLS certificate. Agents cannot verify the server's identity during enrollment — switch to a managed or custom certificate first.
+
 ---
 
 ### PATCH /api/agents/:id
@@ -903,6 +914,8 @@ Create a deployment — ties an agent to a certificate.
 
 **Response (201):** The created deployment object.
 
+**Errors:** `400` if `certificateId` references the certificate currently used for server TLS. Deploying it would allow agents to impersonate the server.
+
 ---
 
 ### PATCH /api/agents/:agentId/deployments/:depId
@@ -921,6 +934,8 @@ Update a deployment (name, certificate, or enabled state).
 ```
 
 **Response (200):** Updated deployment object.
+
+**Errors:** `400` if `certificateId` references the certificate currently used for server TLS.
 
 ---
 

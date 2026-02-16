@@ -5,7 +5,7 @@ const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { validateCloudflareToken } = require('../services/cloudflare');
 const { ensureCloudflareIni, deleteCloudflareIni } = require('../services/certbot');
-const { getTlsSource, installCustomCert, removeCustomCert, readManagedCert, setServiceDomain } = require('../services/tls');
+const { getTlsSource, installCustomCert, removeCustomCert, readManagedCert, getServiceDomain, setServiceDomain } = require('../services/tls');
 const scheduler = require('../services/scheduler');
 
 const router = express.Router();
@@ -27,6 +27,15 @@ router.get('/', (_req, res) => {
 
   const certCount = db.get('SELECT COUNT(*) AS n FROM certificates');
   const activeCerts = db.get("SELECT COUNT(*) AS n FROM certificates WHERE status = 'active'");
+  const agentCount = db.get('SELECT COUNT(*) AS n FROM agents')?.n || 0;
+
+  // Identify the certificate ID being used for server TLS (if managed)
+  const serviceDomain = getServiceDomain();
+  let serviceCertId = null;
+  if (serviceDomain) {
+    const row = db.get("SELECT id FROM certificates WHERE certbot_name = ?", [serviceDomain]);
+    if (row) serviceCertId = row.id;
+  }
 
   res.json({
     server: {
@@ -50,6 +59,11 @@ router.get('/', (_req, res) => {
     },
     tls: {
       source: getTlsSource(),
+      serviceDomain: serviceDomain,
+      serviceCertId: serviceCertId,
+    },
+    agents: {
+      count: agentCount,
     },
     schedule: scheduler.getScheduleInfo(),
     staging: config.letsencrypt.staging,
@@ -167,6 +181,15 @@ router.put('/tls', (req, res) => {
 
   // Revert to self-signed
   if (action === 'reset') {
+    // Block if agents exist — self-signed breaks mTLS trust
+    const db = getDb();
+    const agentCount = db.get('SELECT COUNT(*) AS n FROM agents')?.n || 0;
+    if (agentCount > 0) {
+      return res.status(409).json({
+        error: `Cannot revert to self-signed while ${agentCount} agent${agentCount !== 1 ? 's' : ''} exist. Agents cannot verify the server identity with a self-signed certificate. Remove all agents first, or switch to a different managed/custom certificate instead.`,
+      });
+    }
+
     const result = removeCustomCert();
     if (!result.ok) return res.status(500).json({ error: result.error });
 
@@ -270,7 +293,7 @@ router.get('/tls/managed', (_req, res) => {
   const certs = db.all("SELECT id, domains, status FROM certificates WHERE status = 'active' ORDER BY domains");
   res.json(certs.map((c) => ({
     id: c.id,
-    domains: JSON.parse(c.domains),
+    domains: c.domains.split(' '),
   })));
 });
 
