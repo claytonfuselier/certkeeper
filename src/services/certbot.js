@@ -66,7 +66,7 @@ function classifyError(code, rawMsg) {
   if (msg.includes('unauthorized') || msg.includes('challenge failed') || msg.includes('validation')) {
     return {
       title: 'Domain validation failed',
-      detail: 'The ACME challenge could not be verified. For HTTP-01, ensure port 80 is open and the domain points to this server. For DNS-01, verify your Cloudflare API token has the correct zone permissions.',
+      detail: 'The DNS-01 challenge could not be verified. Ensure your Cloudflare API token has the correct zone permissions for the domain.',
       link: 'https://letsencrypt.org/docs/challenge-types/',
     };
   }
@@ -86,9 +86,9 @@ function classifyError(code, rawMsg) {
   }
   if (msg.includes('port 80') || msg.includes('address already in use') || msg.includes('bind')) {
     return {
-      title: 'Port 80 in use',
-      detail: 'HTTP-01 challenges require port 80 to be available. Stop any web server or process using port 80, or switch to DNS-01 challenge type.',
-      link: 'https://letsencrypt.org/docs/challenge-types/#http-01-challenge',
+      title: 'Port conflict',
+      detail: 'A port conflict was detected during certificate issuance. This is unexpected with DNS-01 challenges.',
+      link: 'https://community.letsencrypt.org/',
     };
   }
   if (msg.includes('permission') || msg.includes('access denied') || msg.includes('eacces')) {
@@ -225,13 +225,12 @@ function parseCertbotCertificates(stdout) {
 // ---------------------------------------------------------------------------
 
 /**
- * Issue a new certificate.
+ * Issue a new certificate via DNS-01 (Cloudflare).
  * @param {Object} opts
  * @param {string[]} opts.domains - e.g. ['example.com', '*.example.com']
- * @param {'http-01'|'dns-01'} opts.challengeType
  * @returns {{ success: boolean, message: string }}
  */
-async function issueCertificate({ domains, challengeType }) {
+async function issueCertificate({ domains }) {
   const args = ['certonly', ...baseArgs()];
 
   // Domain flags
@@ -239,19 +238,15 @@ async function issueCertificate({ domains, challengeType }) {
     args.push('-d', d);
   }
 
-  if (challengeType === 'dns-01') {
-    ensureCloudflareIni();
-    args.push(
-      '--dns-cloudflare',
-      '--dns-cloudflare-credentials', config.paths.cloudflareIni,
-      '--dns-cloudflare-propagation-seconds', '30',
-    );
-  } else {
-    // http-01 standalone — certbot will spin up its own mini-server on port 80
-    args.push('--standalone');
-  }
+  // DNS-01 via Cloudflare
+  ensureCloudflareIni();
+  args.push(
+    '--dns-cloudflare',
+    '--dns-cloudflare-credentials', config.paths.cloudflareIni,
+    '--dns-cloudflare-propagation-seconds', '30',
+  );
 
-  logger.info('Issuing certificate', { domains, challengeType });
+  logger.info('Issuing certificate', { domains });
   const { code, stdout, stderr } = await run('certbot', args);
 
   if (code !== 0) {
@@ -371,8 +366,8 @@ async function syncCertificates() {
       `, [domains, status, expiresAt, cert.staging ? 1 : 0, existing.id]);
     } else {
       db.run(`
-        INSERT INTO certificates (domains, challenge_type, status, expires_at, certbot_name, staging, issued_at)
-        VALUES (?, 'http-01', ?, ?, ?, ?, datetime('now'))
+        INSERT INTO certificates (domains, status, expires_at, certbot_name, staging, issued_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
       `, [domains, status, expiresAt, cert.certbotName, cert.staging ? 1 : 0]);
     }
   }

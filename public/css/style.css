@@ -204,8 +204,6 @@ a:hover { text-decoration: underline; }
 .badge-issuing  { background: rgba(108,99,255,.15); color: var(--primary); }
 .badge-renewing { background: rgba(245,158,11,.15); color: var(--warning); }
 .badge-staging  { background: rgba(245,158,11,.15); color: var(--warning); }
-.badge-http     { background: rgba(108,99,255,.12); color: var(--primary); }
-.badge-dns      { background: rgba(34,197,94,.12); color: var(--success); }
 
 /* ---- Spinner (inline, next to badge) ---- */
 .spinner {

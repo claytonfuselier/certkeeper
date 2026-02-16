@@ -1,291 +1,106 @@
 # 🔒 CertKeeper
+
 [![Version](https://img.shields.io/github/package-json/v/claytonfuselier/certkeeper)](#)
 [![License](https://img.shields.io/github/license/claytonfuselier/certkeeper)](#)
 [![Last Commit](https://img.shields.io/github/last-commit/claytonfuselier/certkeeper)](#)
 [![Node](https://img.shields.io/badge/node-24%2B-green)](https://nodejs.org/)
 [![Express](https://img.shields.io/github/package-json/dependency-version/claytonfuselier/certkeeper/express)](#)
 
-A lightweight, self-hosted Let's Encrypt certificate manager with a web UI.  
-Supports **HTTP-01** and **DNS-01** (Cloudflare) challenge types, including **wildcard certificates**.
+A lightweight, self-hosted certificate manager for Let's Encrypt with a web UI.
+
+Not every service sits behind a reverse proxy that handles TLS for you. Internal services, mail servers, database clusters, IoT devices — they all need valid certificates, but HTTP-01 challenges don't work when there's no public web server. For applications that support DNS-01, you'd have to manage multiple API keys or risk sharing them.
+
+CertKeeper centralizes certificate management using DNS-01 challenges (via Cloudflare) and distributes certificates to where they're needed through its agent system. A single CertKeeper instance handles the Let's Encrypt workflow for all your services; Lightweight agent on your hosts checksin with CertKeeper, pulls down the certs, and installs them automatically.
 
 <br>
 
 ## Features
 
-- **Zero-config startup** — no `.env` file required; configure everything through the first-run setup screen
-- **HTTPS by default** — auto-generates a self-signed TLS certificate on first run; upgrade to a managed Let's Encrypt cert or upload your own PEM files
-- **Multi-domain & wildcard certificates** via Let's Encrypt
-- **HTTP-01** (standalone) and **DNS-01** (Cloudflare API) challenge support
-- **Web dashboard** — issue, renew, revoke, and monitor certificates
-- **Agent system** — token-authenticated agents with deployments pull certificates from CertKeeper for distribution to remote hosts
-- **Smart automatic renewal** — randomized twice-weekly schedule (configurable), with managed TLS cert auto-sync
-- **SQLite storage** — zero external dependencies, no database server needed
-- **File logging** with automatic rotation (5 MB × 5 files)
-- **Runs natively** or in **Docker**
+- **Managed Certs** - Automatic renewal schedule, plus manual renew/revoke/reissue
+- **DNS-01** challenge type supports wildcard certificates and eliminates the need for exposed web servers
+- **Agent system** - distributes certs to remote hosts automatically with heartbeat monitoring and offline alerting
+- **mTLS Authentication** - Internal Certificate Authority allows agents to communicate via mTLS (two-way handshake) after enrollment; no shared or stale secrets to store/rotate
+- **Notifications** - Supported via Email, Webhook, Pushover, and more
+- **HTTPS by default** - Web UI uses self-signed cert by default, but can utilize one of the managed Let's Encrypt certs, or a custom PEM (see [TLS Modes](#tls-modes))
+- **Zero-config** startup with SQLite — no database server needed; everything is configurable via the web UI (optional overrides via `.env`)
+- **Run natively** with Node.js
+- **Docker support** with multi-stage build (pre-built image coming soon)
 
 <br>
 
 ## Quick Start
 
-### Prerequisites
-
-| Native | Docker |
-|--------|--------|
-| Node.js 24+ | Docker & Docker Compose |
-| certbot + certbot-dns-cloudflare | _(included in image)_ |
-
-### 1. Clone & install
+### Docker (recommended)
 
 ```bash
-git clone https://github.com/your-user/certkeeper.git
+git clone https://github.com/claytonfuselier/certkeeper.git
 cd certkeeper
-npm install
-```
-
-**That's it.** No `.env` file is needed — the app works out of the box. On first visit you'll create an admin account and configure settings through the web UI.
-
-### 2a. Run natively
-
-```bash
-sudo npm start
-```
-
-> **Root is required.** certbot needs write access to `/etc/letsencrypt` and may need to bind port 80 for HTTP-01 challenges. The app will exit with an error if not run as root.
-
-Open `https://localhost:3000` — you'll be guided through initial setup (admin account, registration email, etc.).
-
-> The server uses HTTPS with an auto-generated self-signed certificate. Your browser will show a security warning — this is expected. You can upgrade to a trusted certificate later via the TLS settings.
-
-### 2b. Run with Docker
-
-```bash
 docker compose up -d
 ```
 
-This builds the image and starts the container. Data is persisted via bind mounts into the project directory:
+Open `https://localhost:3000` and follow the setup wizard.
+
+Data is persisted via bind mounts:
 
 | Host Path | Container Path | Purpose |
 |-----------|----------------|---------|
 | `./letsencrypt/` | `/etc/letsencrypt` | Certificate files |
-| `./data/` | `/app/data` | SQLite database, session secret, Cloudflare config |
+| `./data/` | `/app/data` | Database, CA, TLS, session secret |
 | `./logs/` | `/app/logs` | Application and certbot logs |
 
-To rebuild after code changes:
+### Native
 
 ```bash
-docker compose up -d --build
+git clone https://github.com/claytonfuselier/certkeeper.git
+cd certkeeper
+npm install
+sudo npm start
 ```
 
-### Optional: environment overrides
+> **Root is required** — certbot needs access to `/etc/letsencrypt`.
 
-All settings have built-in defaults and can be managed through the web UI. To override any default at the environment level, create a `.env` file (see `.env.example`):
+**That's it.** No `.env` file needed. On first visit you'll create an admin account and configure settings through the web UI.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | Server port |
-| `HOST` | `0.0.0.0` | Bind address |
-| `NODE_ENV` | `production` | Node environment |
-| `SESSION_SECRET` | *(auto-generated)* | Session encryption key — auto-generated and persisted to `./data/.session-secret` if not set |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | *(web UI setup)* | If set, overrides DB credentials and disables password changes in the UI |
-| `LETSENCRYPT_EMAIL` | *(web UI)* | Registration email — if set, overrides the UI value |
-| `LETSENCRYPT_STAGING` | `false` | Use Let's Encrypt staging server for testing |
-| `CLOUDFLARE_API_TOKEN` | *(web UI)* | If set, overrides the UI value and is validated against the Cloudflare API |
-| `RENEWAL_CRON` | *(random)* | Cron expression for auto-renewal — if unset, a random twice-weekly early-morning schedule is generated and persisted |
-| `LOG_DIR` | `./logs` | Application and certbot log directory |
-| `CERTBOT_CONFIG_DIR` | `/etc/letsencrypt` | Certbot config root |
-| `CERTBOT_WORK_DIR` | `/var/lib/letsencrypt` | Certbot working directory |
-| `DATA_DIR` | `./data` | App data directory (SQLite DB, session secret) |
-
-When running in Docker, uncomment the `env_file` lines in `docker-compose.yml` to load your `.env`.
+> The server uses HTTPS with an auto-generated self-signed certificate. Your browser will show a security warning on first visit — you can upgrade to a trusted certificate in Settings → TLS.
 
 <br>
 
-## Architecture
+## Agent System
 
-```
-certkeeper/
-├── public/                  # Frontend (vanilla HTML/CSS/JS)
-│   ├── index.html
-│   ├── css/style.css
-│   └── js/app.js
-├── src/
-│   ├── index.js             # Express server entry point
-│   ├── config.js            # Environment config with defaults
-│   ├── db.js                # SQLite schema & connection
-│   ├── logger.js            # Winston logger with file rotation
-│   ├── middleware/
-│   │   ├── auth.js          # Session auth middleware
-│   │   ├── agentAuth.js     # Bearer token auth for agent API
-│   │   └── sessionStore.js  # SQLite-backed session store
-│   ├── routes/
-│   │   ├── auth.js          # Login / logout / setup / password
-│   │   ├── certs.js         # Certificate CRUD + async issue/renew
-│   │   ├── dashboard.js     # Dashboard stats
-│   │   ├── settings.js      # Email, Cloudflare, TLS & schedule management
-│   │   ├── agents.js        # Admin CRUD for agents + deployments (session-authed)
-│   │   └── agent-api.js     # Agent-facing API — deployments, bundles, heartbeat (mTLS-authed)
-│   └── services/
-│       ├── certbot.js       # Certbot CLI wrapper with error classification
-│       ├── cloudflare.js    # Cloudflare API token validation
-│       ├── scheduler.js     # Randomized twice-weekly auto-renewal
-│       ├── agentMonitor.js  # Agent liveness cron (offline detection + notifications)
-│       └── tls.js           # HTTPS cert management (self-signed / custom / managed)
-├── Dockerfile               # Multi-stage: Node 24 deps → Python 3.13/certbot runtime
-├── docker-compose.yml
-├── .env.example
-└── package.json
-```
+CertKeeper includes a built-in agent system for distributing certificates to remote servers:
 
-### How it works
+1. Create an agent in the web UI — you get a one-time enrollment token
+2. Install the agent on the remote host and provide the token
+3. The agent exchanges the token for an mTLS agent certificate (private key never leaves the agent)
+4. Assign certificate deployments to the agent
+5. The agent automatically pulls updated bundles whenever a certificate is renewed
 
-1. The Express server starts over **HTTPS** — on first run it auto-generates a self-signed TLS certificate.
-   - This can be modified in settings: select a managed Let's Encrypt cert (automatically imported when renewed) or upload custom PEM files manually.
-2. On first visit, a setup screen guides you through admin account creation and registration email (required for Let's Encrypt), unless defined with environment varaiables.
-3. When you request a certificate, the backend spawns `certbot certonly` as an async child process — the UI polls for completion.
-4. For **HTTP-01**, certbot runs in standalone mode (needs port 80).
-5. For **DNS-01**, certbot uses the Cloudflare plugin with your API token.
-6. Certificate metadata and status are tracked in SQLite for the dashboard.
-7. A randomized twice-weekly cron schedule (two early-morning runs, 3 days apart) runs `certbot renew` to keep certificates fresh. The schedule is persisted in the database and can be customised in the UI or overridden via `RENEWAL_CRON`.
-8.  If the process crashes while a certificate is being issued/renewed, operations are automatically recovered on the next startup.
+The server monitors agent health via heartbeats and can push commands (like "renew your agent cert") through the heartbeat channel.
+
+See the [Agent Developer Guide](copilot-instructions-for-agent.md) for building compatible agent implementations.
 
 <br>
 
-## API Reference
+## TLS Modes
 
-All API routes are prefixed with `/api`. Authenticated routes require a valid session.
+The server always runs over HTTPS. Three options for the server's own TLS certificate:
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `POST` | `/api/auth/login` | No | Log in |
-| `POST` | `/api/auth/logout` | No | Log out |
-| `GET` | `/api/auth/me` | No | Get current user / setup status |
-| `POST` | `/api/auth/setup` | No | First-run setup (create admin + email) |
-| `POST` | `/api/auth/password` | Yes | Change password |
-| `GET` | `/api/dashboard` | Yes | Dashboard stats |
-| `GET` | `/api/certs` | Yes | List all certificates |
-| `GET` | `/api/certs/:id` | Yes | Get certificate details |
-| `POST` | `/api/certs` | Yes | Request new certificate (async — returns 202) |
-| `POST` | `/api/certs/:id/renew` | Yes | Force renew a certificate (async — returns 202) |
-| `PATCH` | `/api/certs/:id` | Yes | Update cert settings |
-| `DELETE` | `/api/certs/:id` | Yes | Revoke & delete a certificate |
-| `POST` | `/api/certs/sync` | Yes | Sync DB with certbot on disk |
-| `GET` | `/api/settings` | Yes | Get current settings, overrides & system status |
-| `PUT` | `/api/settings/email` | Yes | Update Let's Encrypt registration email |
-| `PUT` | `/api/settings/cloudflare` | Yes | Update & validate Cloudflare API token |
-| `PUT` | `/api/settings/tls` | Yes | Upload custom TLS cert/key or select a managed cert |
-| `GET` | `/api/settings/tls/managed` | Yes | List managed certs available for TLS |
-| `GET` | `/api/settings/schedule` | Yes | Get current renewal schedule |
-| `PUT` | `/api/settings/schedule` | Yes | Update renewal schedule (days & times) |
-| `GET` | `/api/agents` | Yes | List all agents with deployments |
-| `GET` | `/api/agents/:id` | Yes | Get agent detail |
-| `POST` | `/api/agents` | Yes | Create agent (returns token once) |
-| `PATCH` | `/api/agents/:id` | Yes | Update agent name or enabled state |
-| `DELETE` | `/api/agents/:id` | Yes | Delete agent + all its deployments |
-| `POST` | `/api/agents/:id/regenerate-token` | Yes | Regenerate agent token |
-| `POST` | `/api/agents/:id/actions` | Yes | Queue an action for an agent |
-| `GET` | `/api/agents/:id/deployments` | Yes | List deployments for an agent |
-| `POST` | `/api/agents/:id/deployments` | Yes | Add a deployment to an agent |
-| `PATCH` | `/api/agents/:agentId/deployments/:depId` | Yes | Update deployment (enable/disable) |
-| `DELETE` | `/api/agents/:agentId/deployments/:depId` | Yes | Delete a deployment |
-| `GET` | `/api/agent/deployments` | mTLS | List this agent's deployments + cert metadata |
-| `GET` | `/api/agent/deployments/:id/bundle` | mTLS | Download cert + key PEM bundle for a deployment |
-| `POST` | `/api/agent/heartbeat` | mTLS | Agent keepalive / check-in with config versioning |
-| `POST` | `/api/agent/enroll` | Token | Exchange enrollment token + CSR for a signed client cert |
-| `POST` | `/api/agent/renew-cert` | mTLS | Renew agent's mTLS client certificate |
-| `GET` | `/api/agent/time` | None | Server clock for agent time-skew detection |
-| `GET` | `/api/settings/agents` | Yes | Get agent monitoring settings |
-| `PUT` | `/api/settings/agents` | Yes | Update heartbeat interval + offline threshold |
-
-### Request a certificate
-
-```json
-POST /api/certs
-{
-  "domains": ["example.com", "*.example.com"],
-  "challengeType": "dns-01"
-}
-```
-
-Returns `202 Accepted` — poll `GET /api/certs/:id` until `status` changes from `issuing` to `valid` or `error`.
-
-<br>
-
-## Agents & Deployments
-
-CertKeeper includes an **agent system** for distributing certificates to remote hosts. Agents authenticate via **mTLS** (mutual TLS) with a one-time enrollment token for initial bootstrap.
-
-### Concepts
-
-| Term | Description |
+| Mode | Description |
 |------|-------------|
-| **Agent** | Represents a remote host. Creating one generates a one-time enrollment token (`cke_<64 hex>`, valid 1 hour) for mTLS bootstrap. |
-| **Deployment** | Ties an agent to a certificate. An agent can have many deployments. Each tracks `last_deployed_at` and `last_deployed_hash` to detect renewals. |
-| **Heartbeat** | Agents check in every `heartbeat_interval` seconds (default 180s / 3 min, configurable in Settings → Agents). The server tracks liveness and delivers queued actions. |
+| **Self-signed** (default) | Auto-generated on first start, auto-renewed. No setup required. |
+| **Managed cert** | Select one of your issued Let's Encrypt certificates in Settings → TLS. Auto-refreshed on renewal. |
+| **Custom PEM** | Upload your own `cert.pem` + `key.pem` files. |
 
-### Admin workflow
+<br>
 
-1. Create an agent in **Agents** → copy the generated enrollment token.
-2. Install the token on the remote host. The agent exchanges it for a signed mTLS client certificate.
-3. Expand the agent row and click **Add Deployment** — pick a name and a certificate.
-4. The agent discovers deployments via `GET /api/agent/deployments` and pulls cert bundles when `content_hash` changes.
+## Documentation
 
-### Agent-facing API (mTLS-authed)
-
-All agent endpoints (except enrollment and time) require mTLS client certificate authentication.
-
-| Endpoint | Description |
+| Document | Description |
 |----------|-------------|
-| `POST /api/agent/enroll` | One-time enrollment: exchange token + CSR for signed cert + CA cert. |
-| `POST /api/agent/renew-cert` | Renew the agent's mTLS client certificate with a new CSR. |
-| `POST /api/agent/heartbeat` | Keepalive with config versioning. Returns `heartbeat_interval`, `config_version`, `actions`, deployment count, cert expiry. |
-| `GET /api/agent/deployments` | Returns deployments with cert metadata and a `content_hash` (SHA-256 of `fullchain.pem`, 16 hex chars). The agent compares this to its local hash to detect renewals without downloading. |
-| `GET /api/agent/deployments/:id/bundle` | Returns `fullchain`, `cert`, and `key` PEM contents. Updates `last_deployed_at` / `last_deployed_hash`. |
-| `GET /api/agent/time` | Unauthenticated server clock for time-skew detection. |
-
-### Agent monitoring
-
-- Agents that miss heartbeats are flagged as **offline** after `heartbeat_interval × offline_threshold` (default: 3 min × 3 = 9 min).
-- State transitions (`agent_offline` / `agent_online`) are logged and can trigger notifications via any configured channel.
-- The admin can queue actions for agents (e.g. `renew_agent_cert`) — delivered in the next heartbeat response.
-- UI status badges: 🟢 online (current config), 🔵 online (stale config), 🔴 offline, ⚪ unknown/not enrolled.
-
-<br>
-
-## Cloudflare API Token
-
-For DNS-01 challenges, create a Cloudflare API token with these permissions:
-
-1. Go to [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens)
-2. Create a token with **Zone → DNS → Edit** permission
-3. Scope it to the zones you need
-4. Add the token in **Settings → Cloudflare API Token** in the web UI, or set `CLOUDFLARE_API_TOKEN` in `.env`
-
-The token is validated against the Cloudflare API when saved.
-
-<br>
-
-## TLS / HTTPS
-
-The server always runs over HTTPS. On first start, a **self-signed certificate** is generated automatically into `./data/tls/`. You can upgrade it in three ways:
-
-| Method | How |
-|--------|-----|
-| **Managed cert** | Issue a certificate through the dashboard, then select it in **Settings → TLS** — the server copies the cert files and uses them for HTTPS. When the cert is renewed, the files are automatically refreshed. |
-| **Custom PEM upload** | Upload your own `cert.pem` + `key.pem` in **Settings → TLS**. |
-| **Self-signed (default)** | No action needed — auto-generated and auto-renewed every 14 days. |
-
-TLS certificate files are stored in `./data/tls/` and persisted via the `./data/` bind mount in Docker.
-
-<br>
-
-## Logging
-
-All logs are written to `./logs/` (configurable via `LOG_DIR`):
-
-- **`app.log`** — application logs (auto-rotated: 5 MB × 5 files)
-- **certbot output** — certbot logs are directed to the same directory
-
-Logs are also printed to the console (stdout).
+| [API Reference](docs/api.md) | Complete REST API documentation |
+| [Configuration](docs/configuration.md) | Environment variables, Docker setup, notification channels |
+| [Architecture](docs/architecture.md) | Code structure, database schema, design patterns |
+| [Agent Developer Guide](copilot-instructions-for-agent.md) | Everything needed to build a CertKeeper agent |
 
 <br>
 
@@ -293,11 +108,13 @@ Logs are also printed to the console (stdout).
 
 ```bash
 npm install
-# Optionally create .env with LETSENCRYPT_STAGING=true for testing
-npm run dev     # Uses --watch for auto-restart
+npm run dev     # Auto-restart on file changes
 ```
+
+Set `LETSENCRYPT_STAGING=true` in `.env` to use the Let's Encrypt staging server during development.
 
 <br>
 
 ## License
+
 This project is open source and available under the [MIT License](LICENSE).

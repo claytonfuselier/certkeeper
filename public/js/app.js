@@ -65,11 +65,6 @@
     return { title: 'Certificate operation failed', detail: raw, link: 'https://community.letsencrypt.org/' };
   }
 
-  function challengeBadge(type) {
-    const cls = type === 'dns-01' ? 'dns' : 'http';
-    return `<span class="badge badge-${cls}">${type}</span>`;
-  }
-
   // ---------- Auth ----------
 
   async function checkAuth() {
@@ -95,19 +90,12 @@
   let _credentialsSource = 'database'; // 'env' | 'database'
 
   function updateDns01State() {
-    const select = $('#cert-challenge');
     const warning = $('#dns01-no-token');
-    if (!select || !warning) return;
+    if (!warning) return;
 
-    const dns01Option = select.querySelector('option[value="dns-01"]');
     if (!_hasCloudflareToken) {
-      // Disable DNS-01 and show warning
-      dns01Option.disabled = true;
-      if (select.value === 'dns-01') select.value = 'http-01';
       show(warning);
     } else {
-      dns01Option.disabled = false;
-      select.value = 'dns-01';
       hide(warning);
     }
   }
@@ -217,7 +205,6 @@
         if (hasError) tr.classList.add('cert-error-row');
         tr.innerHTML = `
           <td>${cert.domains.map((d) => `<code>${d}</code>`).join(' ')}</td>
-          <td>${challengeBadge(cert.challenge_type)}</td>
           <td>${statusBadge(cert.status, cert.staging)}${inProgress ? ' <span class="spinner"></span>' : ''}${hasError ? ' <button class="btn-error-toggle" title="Show error details">ⓘ</button>' : ''}</td>
           <td>${formatDate(cert.expires_at)}</td>
           <td>
@@ -228,8 +215,8 @@
           </td>
           <td>
             <button class="btn btn-sm btn-secondary renew-btn" data-id="${cert.id}" ${canRenew ? '' : 'disabled'}>Renew</button>
-            ${canRetry ? `<button class="btn btn-sm btn-secondary retry-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}" data-challenge="${cert.challenge_type}">Retry</button>` : ''}
-            ${isRevoked ? `<button class="btn btn-sm btn-secondary reissue-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}" data-challenge="${cert.challenge_type}">Reissue</button>` : ''}
+            ${canRetry ? `<button class="btn btn-sm btn-secondary retry-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}">Retry</button>` : ''}
+            ${isRevoked ? `<button class="btn btn-sm btn-secondary reissue-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}">Reissue</button>` : ''}
             ${canRevoke ? `<button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}">Revoke</button>` : ''}
             ${canRemove ? `<button class="btn btn-sm ${isRevoked || !canRevoke ? 'btn-danger' : 'btn-muted'} remove-btn" data-id="${cert.id}" title="Remove from tracking${canRevoke ? ' without revoking' : ''}">Remove</button>` : ''}
           </td>
@@ -242,7 +229,7 @@
           const errTr = document.createElement('tr');
           errTr.classList.add('cert-error-detail');
           errTr.innerHTML = `
-            <td colspan="6">
+            <td colspan="5">
               <div class="error-detail-box">
                 <strong>⚠ ${escapeHtml(errInfo.title)}</strong>
                 <p>${escapeHtml(errInfo.detail)}</p>
@@ -301,10 +288,9 @@
           btn.disabled = true;
           try {
             const domains = JSON.parse(decodeURIComponent(btn.dataset.domains));
-            const challengeType = btn.dataset.challenge;
             // Remove the errored entry first, then re-request
             await api('DELETE', `/api/certs/${btn.dataset.id}?action=remove`);
-            await api('POST', '/api/certs', { domains, challengeType });
+            await api('POST', '/api/certs', { domains });
             toast('Retry started — processing in background…', 'info');
             loadCertificates();
           } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
@@ -317,8 +303,7 @@
           btn.disabled = true;
           try {
             const domains = JSON.parse(decodeURIComponent(btn.dataset.domains));
-            const challengeType = btn.dataset.challenge;
-            await api('POST', '/api/certs', { domains, challengeType, overrideRevoked: true });
+            await api('POST', '/api/certs', { domains, overrideRevoked: true });
             toast('Reissue started — processing in background…', 'info');
             loadCertificates();
           } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
@@ -354,18 +339,9 @@
   function initNewCertForm() {
     const form = $('#new-cert-form');
     const domainsInput = $('#cert-domains');
-    const challengeSelect = $('#cert-challenge');
     const errorEl = $('#cert-form-error');
     const successEl = $('#cert-form-success');
     const submitBtn = $('#cert-submit-btn');
-
-    // Auto-switch to dns-01 if wildcard detected (only if token is available)
-    domainsInput.addEventListener('input', () => {
-      const val = domainsInput.value;
-      if (val.includes('*') && _hasCloudflareToken) {
-        challengeSelect.value = 'dns-01';
-      }
-    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -376,11 +352,9 @@
       if (!raw) return;
 
       const domains = raw.split(',').map((d) => d.trim()).filter(Boolean);
-      const challengeType = challengeSelect.value;
 
-      // Validate wildcards
-      if (domains.some((d) => d.startsWith('*.')) && challengeType !== 'dns-01') {
-        errorEl.textContent = 'Wildcard domains require DNS-01 challenge type.';
+      if (!_hasCloudflareToken) {
+        errorEl.textContent = 'A Cloudflare API token is required. Add one in Settings → Cloudflare API.';
         show(errorEl);
         return;
       }
@@ -389,7 +363,7 @@
       submitBtn.textContent = 'Submitting…';
 
       try {
-        await api('POST', '/api/certs', { domains, challengeType });
+        await api('POST', '/api/certs', { domains });
         form.reset();
         toast('Certificate request submitted — issuing in background…', 'info');
         navigate('certificates'); // navigate to cert list which will poll
@@ -398,7 +372,7 @@
         if (err.revoked) {
           if (confirm('A revoked certificate exists for these domains. Replace it with a new one?')) {
             try {
-              await api('POST', '/api/certs', { domains, challengeType, overrideRevoked: true });
+              await api('POST', '/api/certs', { domains, overrideRevoked: true });
               form.reset();
               toast('Certificate request submitted — issuing in background…', 'info');
               navigate('certificates');
@@ -1591,7 +1565,7 @@
 
     titleEl.textContent = 'Enrollment Token';
     hintEl.textContent = 'Copy this enrollment token now — it will not be shown again. It expires in 1 hour.';
-    let extraHtml = '<p style="font-size:.85rem;color:var(--text-muted)">Use this token when setting up the CertKeeper agent on the remote host. The agent will exchange it for a client certificate during enrollment.</p>';
+    let extraHtml = '<p style="font-size:.85rem;color:var(--text-muted)">Use this token when setting up the CertKeeper agent on the remote host. The agent will exchange it for an agent certificate during enrollment.</p>';
     if (expiresAt) {
       extraHtml += `<p style="font-size:.8rem;color:var(--warning)">⏳ Expires: ${formatDate(expiresAt)}</p>`;
     }

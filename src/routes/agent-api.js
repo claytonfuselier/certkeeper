@@ -6,7 +6,7 @@ const config = require('../config');
 const { getDb } = require('../db');
 const logger = require('../logger');
 const { requireAgentAuth, requireEnrollmentAuth } = require('../middleware/agentAuth');
-const { signCSR, getCACert, CLIENT_CERT_DAYS } = require('../services/ca');
+const { signCSR, getCACert, AGENT_CERT_DAYS } = require('../services/ca');
 
 const router = express.Router();
 
@@ -16,7 +16,7 @@ const router = express.Router();
 
 // ---------------------------------------------------------------------------
 // POST /api/agent/enroll — exchange an enrollment token + CSR for a signed
-// client certificate. This is the one-time bootstrap endpoint.
+// agent certificate. This is the one-time bootstrap endpoint.
 //
 // Auth: Authorization: Bearer cke_<enrollment_token>
 // Body: { csr: "<PEM-encoded PKCS#10 CSR>" }
@@ -98,7 +98,7 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
       ca_certificate: caCert,
       fingerprint,
       expires_at: expiresAtStr,
-      cert_lifetime_days: CLIENT_CERT_DAYS,
+      cert_lifetime_days: AGENT_CERT_DAYS,
       agent: {
         id: agent.id,
         name: agent.name,
@@ -108,6 +108,17 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
     logger.error('Enrollment failed', { agentId: agent.id, error: err.message });
     res.status(400).json({ error: `Enrollment failed: ${err.message}` });
   }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/time — server clock endpoint for agent time-sync
+// Returns the server's current time so agents can detect clock skew and
+// base expiry calculations on server time rather than their local clock.
+// Unauthenticated — agents need this before enrollment and when their
+// local clock thinks the cert has expired (preventing mTLS auth).
+// ---------------------------------------------------------------------------
+router.get('/time', (_req, res) => {
+  res.json({ server_time: new Date().toISOString() });
 });
 
 // ---------------------------------------------------------------------------
@@ -259,11 +270,11 @@ router.get('/deployments/:id/bundle', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/agent/renew-cert — renew the agent's mTLS client certificate
+// POST /api/agent/renew-cert — renew the agent's mTLS agent certificate
 // The agent calls this while its current cert is still valid. It generates
 // a new key pair, sends a CSR, and receives a fresh signed cert.
 //
-// Auth: mTLS (current client cert) — only available to mTLS agents
+// Auth: mTLS (current agent cert) — only available to mTLS agents
 // Body: { csr: "<PEM-encoded PKCS#10 CSR>" }
 // Response: { certificate, ca_certificate, fingerprint, expires_at }
 // ---------------------------------------------------------------------------
@@ -331,7 +342,7 @@ router.post('/renew-cert', (req, res) => {
       ca_certificate: caCert,
       fingerprint,
       expires_at: expiresAtStr,
-      cert_lifetime_days: CLIENT_CERT_DAYS,
+      cert_lifetime_days: AGENT_CERT_DAYS,
     });
   } catch (err) {
     logger.error('Agent cert renewal failed', { agentId: agent.id, error: err.message });
@@ -422,15 +433,6 @@ router.post('/heartbeat', (req, res) => {
   }
 
   res.json(response);
-});
-
-// ---------------------------------------------------------------------------
-// GET /api/agent/time — server clock endpoint for agent time-sync
-// Returns the server's current time so agents can detect clock skew and
-// base expiry calculations on server time rather than their local clock.
-// ---------------------------------------------------------------------------
-router.get('/time', (_req, res) => {
-  res.json({ server_time: new Date().toISOString() });
 });
 
 module.exports = router;

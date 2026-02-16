@@ -123,10 +123,10 @@ async function start() {
   console.log('\n' + banner + '\n');
   logger.info('CertKeeper starting');
 
-  // Require root (certbot needs write access to /etc/letsencrypt and may bind port 80)
+  // Require root (certbot needs write access to /etc/letsencrypt)
   if (process.getuid && process.getuid() !== 0) {
     console.error('\n✖  CertKeeper must be run as root.');
-    console.error('   certbot requires write access to certificate directories and may need to bind port 80.\n');
+    console.error('   certbot requires write access to certificate directories.\n');
     console.error('   Run with:  sudo node src/index.js\n');
     process.exit(1);
   }
@@ -176,11 +176,11 @@ async function start() {
   const server = https.createServer({
     cert: tls.cert,
     key: tls.key,
-    // mTLS: request client certs but don't reject connections without them.
-    // Browser users won't have client certs — agent auth middleware handles verification.
+    // mTLS: request agent certs but don't reject connections without them.
+    // Browser users won't have agent certs — agent auth middleware handles verification.
     requestCert: true,
     rejectUnauthorized: false,
-    // Trust our internal CA for client cert verification
+    // Trust our internal CA for agent cert verification
     ca: [caCert],
   }, app);
   server.listen(config.port, config.host, (err) => {

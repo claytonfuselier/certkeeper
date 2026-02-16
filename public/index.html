@@ -127,7 +127,6 @@
               <thead>
                 <tr>
                   <th>Domains</th>
-                  <th>Type</th>
                   <th>Status</th>
                   <th>Expires</th>
                   <th>Auto-Renew</th>
@@ -150,18 +149,11 @@
               <div class="form-group">
                 <label for="cert-domains">Domains</label>
                 <input type="text" id="cert-domains" placeholder="example.com, *.example.com" required />
-                <small>Comma-separated. Use *.domain.com for wildcards (requires DNS-01).</small>
+                <small>Comma-separated. Use *.domain.com for wildcards.</small>
               </div>
-              <div class="form-group">
-                <label for="cert-challenge">Challenge Type</label>
-                <select id="cert-challenge">
-                  <option value="http-01">HTTP-01 (Standalone)</option>
-                  <option value="dns-01">DNS-01 (Cloudflare)</option>
-                </select>
-                <small>Wildcard certificates require DNS-01. HTTP-01 needs port 80 available.</small>
-                <div id="dns01-no-token" class="error-msg hidden" style="margin-top:.4rem">
-                  ⚠ No Cloudflare API token configured. <a href="#" data-goto="settings">Add one in Settings</a> to enable DNS-01.
-                </div>
+              <div id="dns01-no-token" class="error-msg hidden" style="margin-top:.4rem">
+                ⚠ No Cloudflare API token configured. <a href="#" data-goto="settings">Add one in Settings</a> to use DNS-01 challenges.
+              </div>
               </div>
               <div id="cert-form-error" class="error-msg hidden"></div>
               <div id="cert-form-success" class="success-msg hidden"></div>
@@ -670,7 +662,7 @@
           <div id="settings-cloudflare" class="settings-pane">
             <div class="card">
               <h3>Cloudflare API Token</h3>
-              <p class="setting-hint">Required for DNS-01 challenges and wildcard certificates.</p>
+              <p class="setting-hint">Required for issuing and renewing certificates (DNS-01 challenges via Cloudflare).</p>
               <div id="cf-token-status" style="margin-bottom:.75rem"></div>
               <form id="cf-token-form">
                 <div class="form-group">

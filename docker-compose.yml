@@ -5,7 +5,6 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-3000}:3000"  # HTTPS web UI
-      - "80:80"               # Required for HTTP-01 challenges (certbot standalone)
     volumes:
       - ./letsencrypt:/etc/letsencrypt
       - ./data:/app/data

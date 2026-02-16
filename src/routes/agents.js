@@ -191,7 +191,7 @@ router.patch('/:id', (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/agents/:id/regenerate-token — reset enrollment, generate new enrollment token
-// Clears the existing client cert and generates a fresh 1-hour enrollment token.
+// Clears the existing agent cert and generates a fresh 1-hour enrollment token.
 // ---------------------------------------------------------------------------
 router.post('/:id/regenerate-token', (req, res) => {
   const db = getDb();

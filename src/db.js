@@ -105,7 +105,6 @@ async function initDatabase() {
     CREATE TABLE IF NOT EXISTS certificates (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       domains         TEXT    NOT NULL,
-      challenge_type  TEXT    NOT NULL CHECK(challenge_type IN ('http-01','dns-01')),
       status          TEXT    NOT NULL DEFAULT 'pending'
                         CHECK(status IN ('pending','issuing','renewing','active','expired','revoked','error')),
       issued_at       TEXT,
@@ -155,7 +154,6 @@ async function initDatabase() {
         CREATE TABLE certificates_new (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
           domains         TEXT    NOT NULL,
-          challenge_type  TEXT    NOT NULL CHECK(challenge_type IN ('http-01','dns-01')),
           status          TEXT    NOT NULL DEFAULT 'pending'
                             CHECK(status IN ('pending','issuing','renewing','active','expired','revoked','error')),
           issued_at       TEXT,
@@ -167,7 +165,8 @@ async function initDatabase() {
           created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
           updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
         );
-        INSERT INTO certificates_new SELECT * FROM certificates;
+        INSERT INTO certificates_new (id, domains, status, issued_at, expires_at, last_renewed_at, auto_renew, certbot_name, error_message, created_at, updated_at)
+          SELECT id, domains, status, issued_at, expires_at, last_renewed_at, auto_renew, certbot_name, error_message, created_at, updated_at FROM certificates;
         DROP TABLE certificates;
         ALTER TABLE certificates_new RENAME TO certificates;
       `);
@@ -190,6 +189,42 @@ async function initDatabase() {
     }
   } catch (migErr) {
     logger.error('Staging column migration failed', { err: migErr.message });
+  }
+
+  // Drop challenge_type column (DNS-01 only — HTTP-01 support removed)
+  try {
+    const tableInfo = _db._db.exec(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='certificates'"
+    );
+    const ddl = tableInfo.length > 0 && tableInfo[0].values.length > 0
+      ? tableInfo[0].values[0][0]
+      : '';
+    if (ddl && ddl.includes('challenge_type')) {
+      logger.info('Dropping challenge_type column from certificates table (DNS-01 only)');
+      _db.exec(`
+        CREATE TABLE certificates_new (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          domains         TEXT    NOT NULL,
+          status          TEXT    NOT NULL DEFAULT 'pending'
+                            CHECK(status IN ('pending','issuing','renewing','active','expired','revoked','error')),
+          issued_at       TEXT,
+          expires_at      TEXT,
+          last_renewed_at TEXT,
+          auto_renew      INTEGER NOT NULL DEFAULT 1,
+          certbot_name    TEXT,
+          error_message   TEXT,
+          staging         INTEGER NOT NULL DEFAULT 0,
+          created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+          updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO certificates_new (id, domains, status, issued_at, expires_at, last_renewed_at, auto_renew, certbot_name, error_message, staging, created_at, updated_at)
+          SELECT id, domains, status, issued_at, expires_at, last_renewed_at, auto_renew, certbot_name, error_message, COALESCE(staging, 0), created_at, updated_at FROM certificates;
+        DROP TABLE certificates;
+        ALTER TABLE certificates_new RENAME TO certificates;
+      `);
+    }
+  } catch (migErr) {
+    logger.error('challenge_type column migration failed', { err: migErr.message });
   }
 
   // Create agents table (for certkeeper-agent auth — mTLS with enrollment token bootstrap)

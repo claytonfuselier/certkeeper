@@ -1,7 +1,7 @@
 {
   "name": "certkeeper",
   "version": "1.0.0",
-  "description": "Lightweight Let's Encrypt certificate manager with web UI — supports HTTP-01 and DNS-01 (Cloudflare) challenges",
+  "description": "Lightweight Let's Encrypt certificate manager with web UI — DNS-01 challenges via Cloudflare with agent-based distribution",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -15,8 +15,7 @@
     "ssl",
     "tls",
     "cloudflare",
-    "dns-01",
-    "http-01"
+    "dns-01"
   ],
   "license": "MIT",
   "dependencies": {

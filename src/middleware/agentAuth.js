@@ -19,15 +19,15 @@ function certFingerprintFromDer(derBuffer) {
 }
 
 /**
- * Try to authenticate an agent via mTLS client certificate.
+ * Try to authenticate an agent via its mTLS agent certificate.
  * Returns the agent row if successful, null otherwise.
  */
 function authenticateViaMTLS(req) {
-  // req.socket.getPeerCertificate() returns the client cert if one was presented
+  // req.socket.getPeerCertificate() returns the agent cert if one was presented
   const peerCert = req.socket?.getPeerCertificate?.(true);
   if (!peerCert || !peerCert.raw) return null;
 
-  // Compute fingerprint of the presented client cert
+  // Compute fingerprint of the presented agent cert
   const fingerprint = certFingerprintFromDer(peerCert.raw);
 
   const db = getDb();
@@ -72,7 +72,7 @@ function authenticateViaMTLS(req) {
 }
 
 /**
- * Express middleware that authenticates an agent via mTLS client certificate.
+ * Express middleware that authenticates an agent via its mTLS agent certificate.
  *
  * On success, sets:
  *   req.agent — the agent row from the DB
@@ -85,7 +85,7 @@ function requireAgentAuth(req, res, next) {
 
   if (!agent) {
     return res.status(401).json({
-      error: 'Authentication failed. Provide a valid mTLS client certificate.',
+      error: 'Authentication failed. Provide a valid mTLS agent certificate.',
     });
   }
 

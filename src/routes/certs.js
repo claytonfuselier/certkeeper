@@ -35,19 +35,11 @@ router.get('/:id', (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/', async (req, res) => {
   try {
-    const { domains, challengeType } = req.body || {};
+    const { domains } = req.body || {};
     const db = getDb();
 
     if (!domains || !Array.isArray(domains) || domains.length === 0) {
       return res.status(400).json({ error: 'domains must be a non-empty array' });
-    }
-    if (!['http-01', 'dns-01'].includes(challengeType)) {
-      return res.status(400).json({ error: 'challengeType must be http-01 or dns-01' });
-    }
-
-    const hasWildcard = domains.some((d) => d.startsWith('*.'));
-    if (hasWildcard && challengeType !== 'dns-01') {
-      return res.status(400).json({ error: 'Wildcard domains require dns-01 challenge type' });
     }
 
     // Check for existing certificate with the same domains
@@ -83,12 +75,12 @@ router.post('/', async (req, res) => {
     const certbotName = domains[0]; // certbot uses the first domain as the cert name
     const isStaging = config.letsencrypt.staging ? 1 : 0;
     const { lastInsertRowid } = db.run(
-      "INSERT INTO certificates (domains, challenge_type, status, certbot_name, staging) VALUES (?, ?, 'issuing', ?, ?)",
-      [domainStr, challengeType, certbotName, isStaging],
+      "INSERT INTO certificates (domains, status, certbot_name, staging) VALUES (?, 'issuing', ?, ?)",
+      [domainStr, certbotName, isStaging],
     );
 
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-      'cert_request', JSON.stringify({ id: lastInsertRowid, domains, challengeType }),
+      'cert_request', JSON.stringify({ id: lastInsertRowid, domains }),
     ]);
 
     // Return immediately — certbot runs in the background
@@ -97,7 +89,7 @@ router.post('/', async (req, res) => {
     res.status(202).json(cert);
 
     // Fire-and-forget: run certbot in the background
-    certbot.issueCertificate({ domains, challengeType }).then(async (result) => {
+    certbot.issueCertificate({ domains }).then(async (result) => {
       if (result.success) {
         await certbot.syncCertificates();
         // Safety net: ensure this specific row is updated even if sync matched differently

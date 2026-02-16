@@ -8,16 +8,16 @@ const config = require('../config');
 // Internal CA for mTLS agent authentication
 //
 // CertKeeper acts as its own Certificate Authority. The CA root cert + key
-// are generated once and stored in data/ca/. Agent client certificates are
-// signed by this CA and verified during the mTLS handshake.
+// are generated once and stored in data/ca/. Agent certificates are signed
+// by this CA and verified during the mTLS handshake.
 // ---------------------------------------------------------------------------
 
 const CA_DIR = path.join(config.paths.data, 'ca');
 const CA_CERT_PATH = path.join(CA_DIR, 'ca.crt');
 const CA_KEY_PATH = path.join(CA_DIR, 'ca.key');
 
-// Agent client cert lifetime: 45 days (renewed when ≤15 days remain)
-const CLIENT_CERT_DAYS = 45;
+// Agent cert lifetime: 45 days (renewed when ≤15 days remain)
+const AGENT_CERT_DAYS = 45;
 
 // ---------------------------------------------------------------------------
 // ASN.1 / DER helpers (pure Node.js — no openssl dependency)
@@ -226,9 +226,9 @@ function buildCACert(keyPair) {
 }
 
 /**
- * Build and sign a client certificate from a CSR.
+ * Build and sign an agent certificate from a CSR.
  */
-function buildClientCert(csrDer, caKeyPair, caCertDer, agentName, days) {
+function buildAgentCert(csrDer, caKeyPair, caCertDer, agentName, days) {
   // Parse enough of the CSR to extract the public key
   // CSR structure: SEQUENCE { CertificationRequestInfo, AlgorithmIdentifier, Signature }
   // CertificationRequestInfo: SEQUENCE { version, subject, subjectPKInfo, attributes }
@@ -276,7 +276,7 @@ function buildClientCert(csrDer, caKeyPair, caCertDer, agentName, days) {
   const serialNumber = crypto.randomBytes(16);
   const notBefore = new Date();
   const notAfter = new Date();
-  notAfter.setDate(notAfter.getDate() + (days || CLIENT_CERT_DAYS));
+  notAfter.setDate(notAfter.getDate() + (days || AGENT_CERT_DAYS));
 
   // Use the agent name as CN
   const subject = buildName(agentName, 'CertKeeper Agent');
@@ -316,7 +316,7 @@ function buildClientCert(csrDer, caKeyPair, caCertDer, agentName, days) {
 
   const clientKeyId = keyIdFromSPKI(spkiDer);
 
-  // Extensions for client cert
+  // Extensions for agent cert
   const extensions = derSequence([
     // Basic Constraints: CA=false
     derSequence([
@@ -474,7 +474,7 @@ function getCACert() {
 }
 
 /**
- * Get the CA key pair (for signing client certs).
+ * Get the CA key pair (for signing agent certs).
  */
 function getCAKeyPair() {
   const { caCert, caKey } = ensureCA();
@@ -484,11 +484,11 @@ function getCAKeyPair() {
 }
 
 /**
- * Sign a CSR (PEM) and return a client certificate (PEM).
+ * Sign a CSR (PEM) and return an agent certificate (PEM).
  *
  * @param {string} csrPem — PEM-encoded PKCS#10 CSR from the agent
  * @param {string} agentName — Agent name (used as CN in the cert)
- * @param {number} [days] — Cert lifetime in days (default: CLIENT_CERT_DAYS)
+ * @param {number} [days] — Cert lifetime in days (default: AGENT_CERT_DAYS)
  * @returns {{ certPem: string, fingerprint: string, expiresAt: Date }}
  */
 function signCSR(csrPem, agentName, days) {
@@ -496,12 +496,12 @@ function signCSR(csrPem, agentName, days) {
   const caCertDer = pemToDer(caCertPem, 'CERTIFICATE');
   const csrDer = pemToDer(csrPem, 'CERTIFICATE REQUEST');
 
-  const { certDer, notAfter } = buildClientCert(
+  const { certDer, notAfter } = buildAgentCert(
     csrDer,
     { privateKey, publicKey },
     caCertDer,
     agentName,
-    days || CLIENT_CERT_DAYS,
+    days || AGENT_CERT_DAYS,
   );
 
   const certPem = derToPem(certDer, 'CERTIFICATE');
@@ -534,7 +534,7 @@ module.exports = {
   signCSR,
   certFingerprint,
   certExpiresAt,
-  CLIENT_CERT_DAYS,
+  AGENT_CERT_DAYS,
   CA_CERT_PATH,
   CA_DIR,
 };
