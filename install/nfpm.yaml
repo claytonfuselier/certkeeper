@@ -1,0 +1,80 @@
+name: certkeeper
+arch: "${ARCH}"
+version: "${VERSION}"
+release: "1"
+section: web
+priority: optional
+maintainer: Clayton Fuselier <https://github.com/claytonfuselier>
+description: Lightweight Let's Encrypt certificate manager with web UI
+homepage: https://github.com/claytonfuselier/certkeeper
+license: MIT
+vendor: CertKeeper
+
+# Dependencies
+depends:
+  - nodejs
+overrides:
+  deb:
+    depends:
+      - nodejs (>= 24)
+  rpm:
+    depends:
+      - nodejs >= 24
+
+# Package contents
+contents:
+  # Application code
+  - src: ./dist/certkeeper/
+    dst: /opt/certkeeper/
+    type: tree
+
+  # systemd service unit
+  - src: ./install/certkeeper.service
+    dst: /etc/systemd/system/certkeeper.service
+    file_info:
+      mode: 0644
+
+  # Default environment file
+  - src: ./install/certkeeper.env
+    dst: /etc/certkeeper/certkeeper.env
+    type: config|noreplace
+    file_info:
+      mode: 0640
+      owner: root
+      group: certkeeper
+
+  # Create required directories
+  - dst: /var/lib/certkeeper
+    type: dir
+    file_info:
+      mode: 0750
+      owner: root
+      group: certkeeper
+
+  - dst: /var/log/certkeeper
+    type: dir
+    file_info:
+      mode: 0750
+      owner: root
+      group: certkeeper
+
+  - dst: /etc/certkeeper
+    type: dir
+    file_info:
+      mode: 0750
+      owner: root
+      group: certkeeper
+
+  - dst: /etc/letsencrypt
+    type: dir
+    file_info:
+      mode: 0755
+
+  - dst: /var/lib/letsencrypt
+    type: dir
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: ./install/postinstall.sh
+  preremove: ./install/preremove.sh

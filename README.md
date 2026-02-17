@@ -23,8 +23,8 @@ CertKeeper centralizes certificate management using DNS-01 challenges (via Cloud
 - **Notifications** - Supported via Email, Webhook, Pushover, and more
 - **Zero-config** startup with SQLite — no database server needed; everything is configurable via the web UI (optional overrides via `.env`)
 - **HTTPS by default** - Web UI uses self-signed cert at setup, but can be easily upgraded to one of the managed Let's Encrypt certs or a custom PEM (see [TLS Modes](#tls-modes))
-- **Run natively** with Node.js
-- **Docker support** with multi-stage build (pre-built image coming soon)
+- **Run natively** with Node.js — install via one-line script, `.deb`/`.rpm` package, or manual setup
+- **Docker support** — pre-built image on GHCR, or build from source with multi-stage Dockerfile
 - **Security** - CSRF protection, XSS-safe output encoding, parameterized SQL queries, and AES-256-GCM encryption at rest for stored secrets
 
 <br>
@@ -33,10 +33,20 @@ CertKeeper centralizes certificate management using DNS-01 challenges (via Cloud
 
 ### Docker (recommended)
 
+Pull the pre-built image:
+
+```bash
+mkdir certkeeper && cd certkeeper
+curl -fsSL https://raw.githubusercontent.com/claytonfuselier/certkeeper/main/docker-compose.yml -o docker-compose.yml
+docker compose up -d
+```
+
+Or clone the repo and build from source:
+
 ```bash
 git clone https://github.com/claytonfuselier/certkeeper.git
 cd certkeeper
-docker compose up -d
+docker compose up -d --build
 ```
 
 Open `https://localhost:3000` and follow the setup wizard.
@@ -49,7 +59,15 @@ Data is persisted via bind mounts:
 | `./data/` | `/app/data` | Database, CA, TLS, session secret |
 | `./logs/` | `/app/logs` | Application and certbot logs |
 
-### Native
+### Install Script (Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/claytonfuselier/certkeeper/main/install.sh | sudo bash
+```
+
+Installs CertKeeper as a systemd service. The script handles dependencies (Node.js, certbot), downloads the latest `.deb`/`.rpm` package, and starts the service. See [Installation Guide](docs/installation.md) for details.
+
+### Manual
 
 ```bash
 git clone https://github.com/claytonfuselier/certkeeper.git
@@ -98,6 +116,7 @@ The server always runs over HTTPS. Three options for the server's own TLS certif
 
 | Document | Description |
 |----------|-------------|
+| [Installation Guide](docs/installation.md) | Install script, packages, manual setup, updating, uninstalling |
 | [API Reference](docs/api.md) | Complete REST API documentation |
 | [Configuration](docs/configuration.md) | Environment variables, Docker setup, notification channels |
 | [Architecture](docs/architecture.md) | Code structure, database schema, design patterns |

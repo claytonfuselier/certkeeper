@@ -1,0 +1,37 @@
+[Unit]
+Description=CertKeeper — Let's Encrypt Certificate Manager
+Documentation=https://github.com/claytonfuselier/certkeeper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/certkeeper/src/index.js
+WorkingDirectory=/opt/certkeeper
+EnvironmentFile=-/etc/certkeeper/certkeeper.env
+Restart=on-failure
+RestartSec=5
+
+# Runs as root because certbot requires write access to /etc/letsencrypt.
+# Hardening directives below constrain what the process can actually do.
+User=root
+Group=certkeeper
+
+# Security hardening
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/letsencrypt /var/lib/letsencrypt /var/lib/certkeeper /var/log/certkeeper
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+# Logging (stdout/stderr → journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=certkeeper
+
+[Install]
+WantedBy=multi-user.target

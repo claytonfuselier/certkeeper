@@ -1,6 +1,8 @@
 services:
   certkeeper:
-    build: .
+    image: ghcr.io/claytonfuselier/certkeeper:latest
+    # To build from source instead, comment out 'image' above and uncomment:
+    # build: .
     container_name: certkeeper
     restart: unless-stopped
     ports:

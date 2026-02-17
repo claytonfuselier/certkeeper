@@ -16,6 +16,7 @@ CertKeeper is a lightweight, self-hosted Let's Encrypt certificate manager with 
 - **Crypto:** Pure Node.js `crypto` module for internal CA (RSA key gen, X.509 cert signing, DER/ASN.1 encoding — no openssl dependency)
 - **Auth:** bcryptjs + express-session backed by a custom SQLite session store
 - **Containerization:** Docker (multi-stage: node:24-alpine for deps → python:3.13-alpine for certbot runtime)
+- **Packaging:** nfpm for `.deb`/`.rpm` generation; install script for automated setup; systemd for service management
 
 ## Architecture
 
@@ -47,6 +48,19 @@ src/
     ├── scheduler.js     # Randomized twice-weekly renewal cron
     ├── agentMonitor.js  # Agent liveness cron (every 1 min, offline detection)
     └── tls.js           # HTTPS cert management (self-signed / custom / managed)
+
+install/
+├── certkeeper.service   # systemd unit file
+├── certkeeper.env       # Default env file template for /etc/certkeeper/
+├── nfpm.yaml            # nfpm config for .deb/.rpm package generation
+├── postinstall.sh       # Package post-install script (user, dirs, service)
+└── preremove.sh         # Package pre-remove script (stop service)
+
+.github/workflows/
+├── docker-publish.yml   # Build and push Docker image to GHCR
+└── release.yml          # Build .deb/.rpm/tarball on GitHub Release
+
+install.sh               # Root-level install/uninstall script
 
 public/
 ├── index.html           # Single-page app (all views in one file)
@@ -204,8 +218,19 @@ Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates
 - `selfsigned` v5.5.0 quirks: `generate()` is async (returns Promise), ignores `days` option — use `notAfterDate` (Date object).
 - The internal CA (`ca.js`) is pure Node.js crypto. All ASN.1/DER encoding is done manually. Do not add openssl as a dependency.
 - Domains in the `certificates` table are stored as **space-separated strings** (e.g. `"example.com *.example.com"`). Routes split them into arrays for API responses: `cert.domains.split(' ')`.
+- **Keep install infrastructure current.** When adding new env vars, changing paths, adding dependencies, or modifying the startup sequence, update the corresponding install files: `install/certkeeper.env`, `install/certkeeper.service`, `install/nfpm.yaml`, `install/postinstall.sh`, `install.sh`, `docs/installation.md`, and `docs/configuration.md`.
+
+### Installation & Packaging
+
+- **Install script** (`install.sh`): Detects distro, installs deps (Node.js, certbot), downloads `.deb`/`.rpm` from GitHub Releases (falls back to tarball), sets up systemd service. Supports `--uninstall` and `--yes` (non-interactive).
+- **System packages** (`.deb`/`.rpm`): Built via nfpm (`install/nfpm.yaml`). Version comes from `package.json`. Packages include app code + `node_modules` at `/opt/certkeeper/`, systemd unit, and env file.
+- **systemd unit** (`install/certkeeper.service`): Runs as root (certbot requirement), with `ProtectSystem=strict` and other hardening. Reads env from `/etc/certkeeper/certkeeper.env`.
+- **System user:** `certkeeper` (no-login) — owns data/log/config dirs. Service runs as root but dirs are `root:certkeeper` for group read.
+- **System paths:** App at `/opt/certkeeper/`, data at `/var/lib/certkeeper/`, logs at `/var/log/certkeeper/`, config at `/etc/certkeeper/`, certs at `/etc/letsencrypt/`.
+- **Docker image:** Published to GHCR via `.github/workflows/docker-publish.yml`. Tagged `latest` + `v{version}` on main, `dev` + `v{version}-dev` on other branches.
+- **Release packages:** Built via `.github/workflows/release.yml` on GitHub Release publish. Produces `.deb`, `.rpm`, and `.tar.gz` for amd64 and arm64.
+- **Certbot conflict detection:** Install script and postinstall check for active `certbot.timer` and `/etc/cron.d/certbot`, warn and offer to disable.
 
 ## TODOs
 
 - **TLS hot-reload:** `refreshServiceCert()` should call `server.setSecureContext()` (or restart the HTTPS listener) so that cert changes (both portal-driven and scheduled renewals) take effect without a full process restart.
-- **Packaging:** Compile this into a distributable package with bundled dependencies and an installer script for easy self-hosted deployment.

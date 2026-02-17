@@ -1,0 +1,104 @@
+name: Build Release Packages
+
+on:
+  release:
+    types: [published]
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (e.g. 1.2.0) — leave empty to read from package.json'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      - name: Prepare dist directory
+        run: |
+          mkdir -p dist/certkeeper
+          cp -r src public node_modules package.json dist/certkeeper/
+          cp -r install dist/certkeeper/
+
+      - name: Install nfpm
+        run: |
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' \
+            | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nfpm
+
+      - name: Build .deb package
+        run: |
+          VERSION=${{ steps.version.outputs.version }} \
+          ARCH=${{ matrix.arch }} \
+          nfpm package \
+            --config install/nfpm.yaml \
+            --packager deb \
+            --target certkeeper_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb
+
+      - name: Build .rpm package
+        run: |
+          RPM_ARCH=${{ matrix.arch }}
+          if [ "$RPM_ARCH" = "amd64" ]; then RPM_ARCH="x86_64"; fi
+          if [ "$RPM_ARCH" = "arm64" ]; then RPM_ARCH="aarch64"; fi
+
+          VERSION=${{ steps.version.outputs.version }} \
+          ARCH=${{ matrix.arch }} \
+          nfpm package \
+            --config install/nfpm.yaml \
+            --packager rpm \
+            --target certkeeper-${{ steps.version.outputs.version }}-1.${RPM_ARCH}.rpm
+
+      - name: Build tarball
+        run: |
+          tar czf certkeeper-${{ steps.version.outputs.version }}-linux-${{ matrix.arch }}.tar.gz \
+            -C dist certkeeper
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            certkeeper_${{ steps.version.outputs.version }}_${{ matrix.arch }}.deb \
+            certkeeper-*.rpm \
+            certkeeper-${{ steps.version.outputs.version }}-linux-${{ matrix.arch }}.tar.gz \
+            --clobber
+
+      - name: Upload artifacts (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: |
+            *.deb
+            *.rpm
+            *.tar.gz

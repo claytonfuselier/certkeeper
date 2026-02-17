@@ -39,6 +39,19 @@ If either `ADMIN_USERNAME` or `ADMIN_PASSWORD` is set, both must be set. The env
 |----------|---------|-------------|
 | `CLOUDFLARE_API_TOKEN` | *(none)* | API token for DNS-01 challenges. Can also be set in Settings → Cloudflare API. If set via env, it takes priority over the database value. Validated against the Cloudflare API at startup — the app exits if invalid. |
 
+#### Creating a Cloudflare API Token
+
+CertKeeper requires a scoped API **token** (not the legacy global API key) with permission to edit DNS records.
+
+1. Go to [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens)
+2. Click **Create Token**
+3. Use the **Edit zone DNS** template, or create a custom token with:
+   - **Permissions:** Zone → DNS → Edit
+   - **Zone Resources:** Include → Specific zone (or All zones)
+4. Copy the token and enter it in CertKeeper (Settings → Cloudflare API) or set `CLOUDFLARE_API_TOKEN` in your environment
+
+For detailed steps, see the [Cloudflare documentation on creating API tokens](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/).
+
 ### Paths
 
 | Variable | Default | Description |
@@ -131,7 +144,17 @@ Or pass individual variables in the `environment` block:
 
 ## Native (No Docker)
 
-### Prerequisites
+### Install Script (recommended)
+
+The easiest way to install natively. See the [Installation Guide](installation.md) for full details.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/claytonfuselier/certkeeper/main/install.sh | sudo bash
+```
+
+After installation, configure via `/etc/certkeeper/certkeeper.env` and manage with `systemctl`.
+
+### Prerequisites (manual install)
 - **Node.js 24+**
 - **certbot** installed and in PATH ([install guide](https://certbot.eff.org/instructions))
 - For DNS-01 challenges: `certbot-dns-cloudflare` plugin
@@ -148,7 +171,7 @@ sudo node src/index.js
 
 ### Directory Layout
 
-After first run:
+After first run (manual/dev install from git clone):
 ```
 certkeeper/
 ├── data/
@@ -164,6 +187,22 @@ certkeeper/
 │   └── cloudflare.ini        # Certbot DNS credentials
 └── logs/
     └── app.log               # Rotated: 5 MB × 5 files
+```
+
+System install (via install script or `.deb`/`.rpm`):
+```
+/opt/certkeeper/              Application code
+/etc/certkeeper/
+└── certkeeper.env            Environment overrides
+/var/lib/certkeeper/          Persistent data (DATA_DIR)
+├── certkeeper.db
+├── .encryption-key
+├── .session-secret
+├── ca/
+└── tls/
+/var/log/certkeeper/          Log files (LOG_DIR)
+└── app.log
+/etc/letsencrypt/             Certbot certificate store
 ```
 
 ---
