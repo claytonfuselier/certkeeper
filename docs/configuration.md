@@ -154,6 +154,7 @@ certkeeper/
 ├── data/
 │   ├── certkeeper.db        # SQLite database
 │   ├── .session-secret       # Auto-generated session key
+│   ├── .encryption-key       # AES-256-GCM key for secrets at rest
 │   ├── tls/                  # Server HTTPS certificate
 │   │   ├── cert.pem
 │   │   └── key.pem
@@ -261,7 +262,9 @@ Notification configs are managed in Settings → Notifications. Each channel has
 
 ### Secret Handling
 
-Secrets (tokens, keys) are **masked** in GET responses:
+Secrets (tokens, keys) are **encrypted at rest** in the database using AES-256-GCM. The encryption key is stored separately in `data/.encryption-key` and rotated automatically every 30 days.
+
+In API responses, secrets are **masked**:
 - Token fields appear as `hasToken: true` / `hasSecret: true` instead of the raw value
 - On PUT, omitting a secret field preserves the existing stored value
 - Sending a new value overwrites it

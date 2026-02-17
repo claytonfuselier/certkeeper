@@ -8,6 +8,21 @@ All API routes are prefixed with `/api`. Responses are JSON unless otherwise not
 - **Token** — One-time enrollment token in `Authorization: Bearer cke_<token>` header.
 - **None** — No authentication required.
 
+### CSRF Protection
+
+All state-changing requests (POST, PUT, PATCH, DELETE) from session-authenticated users must include a valid CSRF token in the `X-CSRF-Token` header. The token is provided in the response body of:
+
+- `POST /api/auth/login` → `csrfToken`
+- `POST /api/auth/setup` → `csrfToken`
+- `GET /api/auth/me` (when authenticated) → `csrfToken`
+
+**Exempt routes:** Agent API (`/api/agent/*`) uses mTLS and is not subject to CSRF checks. Login and setup endpoints are also exempt since the session doesn't exist yet.
+
+A missing or invalid CSRF token returns **403**:
+```json
+{ "error": "Invalid CSRF token" }
+```
+
 ---
 
 ## Authentication
@@ -30,7 +45,8 @@ Log in with username and password. Creates a session cookie.
 ```json
 {
   "ok": true,
-  "user": { "username": "admin" }
+  "user": { "username": "admin" },
+  "csrfToken": "<token>"
 }
 ```
 
@@ -60,7 +76,8 @@ Get the current user, or check if initial setup is needed.
 **Response (200)** — authenticated:
 ```json
 {
-  "user": { "id": 1, "username": "admin" }
+  "user": { "id": 1, "username": "admin" },
+  "csrfToken": "<token>"
 }
 ```
 
@@ -104,7 +121,8 @@ First-run setup — create the admin account and set the registration email. Onl
 ```json
 {
   "ok": true,
-  "user": { "username": "admin" }
+  "user": { "username": "admin" },
+  "csrfToken": "<token>"
 }
 ```
 

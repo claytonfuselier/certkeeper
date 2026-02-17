@@ -15,6 +15,7 @@ src/
 ├── middleware/
 │   ├── auth.js           requireAuth session middleware
 │   ├── agentAuth.js      mTLS agent certificate auth + enrollment token auth
+│   ├── csrf.js            CSRF synchronizer token middleware
 │   └── sessionStore.js   SQLite-backed express-session store
 ├── routes/
 │   ├── auth.js           Login, logout, first-run setup, password change
@@ -28,6 +29,8 @@ src/
     ├── ca.js             Internal Certificate Authority (RSA 4096, pure Node.js crypto)
     ├── certbot.js        Certbot CLI wrapper (child_process) with error classification
     ├── cloudflare.js     CF API token validation
+    ├── configHelpers.js  Shared config resolution (env var > DB, with decryption)
+    ├── encryption.js     AES-256-GCM encryption for secrets at rest + key rotation
     ├── scheduler.js      Randomized twice-weekly renewal cron
     ├── agentMonitor.js   Agent liveness cron (every 1 min, offline detection)
     └── tls.js            HTTPS cert management (self-signed / custom / managed)
@@ -51,6 +54,7 @@ public/
 data/                     Runtime data (created automatically)
 ├── certkeeper.db         SQLite database file
 ├── .session-secret       Auto-generated session signing key
+├── .encryption-key       AES-256-GCM key for secrets at rest (auto-generated)
 ├── tls/                  Server TLS certificates
 │   ├── cert.pem
 │   └── key.pem
@@ -123,13 +127,13 @@ All methods are synchronous (in-memory). Writes trigger a debounced `_scheduleSa
 
 Key settings values:
 - `letsencrypt_email` — Let's Encrypt registration email
-- `cloudflare_api_token` — Cloudflare API token (plaintext)
+- `cloudflare_api_token` — Cloudflare API token (encrypted at rest)
 - `tls_managed_domain` — domain of managed cert (TLS source is detected from files on disk, not stored)
 - `renewal_schedule` — renewal schedule as JSON (contains day1/day2 specs)
 - `agent_heartbeat_interval` — seconds (default `180`)
 - `agent_offline_threshold` — missed heartbeats (default `3`)
 - `agent_config_version` — global integer, incremented on settings change
-- `notif_<channel>` — JSON notification channel config (e.g. `notif_email`, `notif_slack`)
+- `notif_<channel>` — JSON notification channel config (encrypted at rest; e.g. `notif_email`, `notif_slack`)
 
 #### `agents`
 | Column | Type | Notes |
@@ -202,15 +206,17 @@ Migrations run inline in `db.js` during `initDatabase()`. Each migration inspect
 Defined in `src/index.js` `start()`:
 
 1. **Initialize database** — load or create SQLite, run all migrations
-2. **Ensure admin user** — if `ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars are set, create or sync the admin account
-3. **Validate Cloudflare token** — if `CLOUDFLARE_API_TOKEN` env is set, validate against the CF API; exit on failure
-4. **Check certbot** — `execFile('certbot', ['--version'])`, warn (non-blocking) if not found
-5. **Recover stuck certs** — any certificates in `issuing`/`renewing` status from a prior crash → mark as `error`
-6. **Load TLS credentials** — self-signed (generated via `selfsigned` package), custom PEM, or managed Let's Encrypt cert
-7. **Initialize internal CA** — `ensureCA()` generates or loads the RSA 4096-bit root CA from `data/ca/`
-8. **Start HTTPS server** — `requestCert: true, rejectUnauthorized: false` with the internal CA cert in the trust chain
-9. **Start renewal scheduler** — two node-cron tasks (randomized twice-weekly)
-10. **Start agent monitor** — node-cron task every 1 minute
+2. **Initialize encryption** — ensure AES-256-GCM key exists (`data/.encryption-key`), migrate any plaintext secrets to encrypted form
+3. **Ensure admin user** — if `ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars are set, create or sync the admin account
+4. **Validate Cloudflare token** — if `CLOUDFLARE_API_TOKEN` env is set, validate against the CF API; exit on failure
+5. **Check certbot** — `execFile('certbot', ['--version'])`, warn (non-blocking) if not found
+6. **Recover stuck certs** — any certificates in `issuing`/`renewing` status from a prior crash → mark as `error`
+7. **Load TLS credentials** — self-signed (generated via `selfsigned` package), custom PEM, or managed Let's Encrypt cert
+8. **Initialize internal CA** — `ensureCA()` generates or loads the RSA 4096-bit root CA from `data/ca/`
+9. **Start HTTPS server** — `requestCert: true, rejectUnauthorized: false` with the internal CA cert in the trust chain
+10. **Start renewal scheduler** — two node-cron tasks (randomized twice-weekly)
+11. **Start agent monitor** — node-cron task every 1 minute
+12. **Start key rotation cron** — daily check; rotates encryption key every 30 days
 
 ---
 
@@ -265,6 +271,59 @@ Agent monitoring settings have a global `agent_config_version` integer stored in
 ### Fingerprint Collision Handling
 
 SHA-256 fingerprint collisions are astronomically unlikely but handled defensively. Both enrollment and cert renewal check the incoming fingerprint against all agents' `cert_fingerprint` and `prev_cert_fingerprint` columns. A collision returns 409 with `{ retry: true }`, instructing the agent to regenerate its key pair and try again.
+
+---
+
+## Security
+
+### CSRF Protection
+
+All state-changing requests (POST, PUT, PATCH, DELETE) from session-authenticated users require a synchronizer CSRF token. The middleware (`csrf.js`) enforces this:
+
+- **Token lifecycle:** A CSRF token is generated on login, setup, and session check (`GET /api/auth/me`). It's stored in the session server-side.
+- **Client requirement:** The frontend sends the token in the `X-CSRF-Token` header on every state-changing request.
+- **Exempt routes:** GET/HEAD/OPTIONS (read-only), `/api/agent/*` (mTLS-authenticated, not cookie-based), `/api/auth/login` and `/api/auth/setup` (session doesn't exist yet), unauthenticated requests.
+
+### Encryption at Rest
+
+Sensitive values in the `settings` table are encrypted with AES-256-GCM (`encryption.js`):
+
+- **Key storage:** `data/.encryption-key` — a JSON file containing the hex-encoded 256-bit key, creation timestamp, and optionally a `previous_key` during rotation.
+- **Encrypted format:** `ek1:<key_fingerprint>:<iv_hex>:<authTag_hex>:<ciphertext_hex>` — the `ek1` prefix and fingerprint enable key identification and versioning.
+- **Encrypted keys:** `cloudflare_api_token` and all 7 `notif_<channel>` configs (8 total).
+- **Auto-migration:** On startup, any plaintext values in the encrypted key set are transparently encrypted.
+- **Key rotation:** A daily cron (02:00) checks key age and rotates every 30 days using a crash-safe 5-step sequence with `previous_key` fallback. See below.
+- **Passthrough:** `encrypt()`/`decrypt()` pass through `null`, empty strings, and already-encrypted values safely.
+
+### Crash-Safe Key Rotation
+
+Key rotation follows a 5-step sequence designed to survive process crashes at any point:
+
+1. Decrypt all secrets with the current key
+2. Generate a new key, storing the old key as `previous_key` in the key file
+3. Re-encrypt all secrets with the new key
+4. Flush the database to disk (`db.save()`)
+5. Remove `previous_key` from the key file
+
+If a crash occurs between steps 2–4, `decrypt()` falls back to `previous_key` when the current key's fingerprint doesn't match the encrypted value. All operations are synchronous (sql.js + `fs.writeFileSync`), so the entire rotation runs in a single event loop tick with no interleaving.
+
+### XSS Prevention
+
+- All user-supplied content rendered in the frontend passes through `escapeHtml()` (`dom.js`) before insertion into the DOM
+- Template literals use escaped values; no raw `innerHTML` with unsanitized input
+
+### SQL Injection Prevention
+
+- All database queries use parameterized statements (`?` placeholders) via the sql.js API
+- Integer parameters from URL paths are validated with `parseIntId()` which rejects non-numeric values before they reach any query
+- The `upsertSetting()` helper uses `ON CONFLICT` with bound parameters
+
+### Session Security
+
+- Sessions are stored server-side in SQLite (not in cookies)
+- Session secret is auto-generated with `crypto.randomBytes(48)` and persisted in `data/.session-secret`
+- Expired sessions are cleaned up hourly
+- Auth routes return only `id` and `username` — password hashes are never sent to the client
 
 ---
 

@@ -17,14 +17,15 @@ CertKeeper centralizes certificate management using DNS-01 challenges (via Cloud
 ## Features
 
 - **Managed Certs** - Automatic renewal schedule, plus manual renew/revoke/reissue
-- **DNS-01** challenge type supports wildcard certificates and eliminates the need for exposed web servers
-- **Agent system** - distributes certs to remote hosts automatically with heartbeat monitoring and offline alerting
-- **mTLS Authentication** - Internal Certificate Authority allows agents to communicate via mTLS (two-way handshake) after enrollment; no shared or stale secrets to store/rotate
+- **DNS-01** challenge eliminates the need for exposed web servers supports wildcard certificates
+- **Agent system** - distributes certs to remote hosts automatically with customizable install/update actions
+- **mTLS Authentication** - Internal Certificate Authority allows agents to communicate via Mutual TLS (mTLS); no shared or stale secrets to manage.
 - **Notifications** - Supported via Email, Webhook, Pushover, and more
-- **HTTPS by default** - Web UI uses self-signed cert by default, but can utilize one of the managed Let's Encrypt certs, or a custom PEM (see [TLS Modes](#tls-modes))
 - **Zero-config** startup with SQLite — no database server needed; everything is configurable via the web UI (optional overrides via `.env`)
+- **HTTPS by default** - Web UI uses self-signed cert at setup, but can be easily upgraded to one of the managed Let's Encrypt certs or a custom PEM (see [TLS Modes](#tls-modes))
 - **Run natively** with Node.js
 - **Docker support** with multi-stage build (pre-built image coming soon)
+- **Security** - CSRF protection, XSS-safe output encoding, parameterized SQL queries, and AES-256-GCM encryption at rest for stored secrets
 
 <br>
 

@@ -28,6 +28,7 @@ src/
 ├── middleware/
 │   ├── auth.js          # requireAuth session middleware
 │   ├── agentAuth.js     # mTLS agent certificate auth + enrollment token auth for agents
+│   ├── csrf.js          # CSRF synchronizer token middleware
 │   └── sessionStore.js  # SQLite-backed express-session store
 ├── routes/
 │   ├── auth.js          # Login, logout, first-run setup, password change
@@ -41,6 +42,8 @@ src/
     ├── ca.js            # Internal Certificate Authority (RSA 4096, pure Node.js crypto)
     ├── certbot.js       # Certbot CLI wrapper (child_process) with error classification
     ├── cloudflare.js    # CF API token validation
+    ├── configHelpers.js # Shared config resolution (env var > DB, with decryption)
+    ├── encryption.js    # AES-256-GCM encryption for secrets at rest + key rotation
     ├── scheduler.js     # Randomized twice-weekly renewal cron
     ├── agentMonitor.js  # Agent liveness cron (every 1 min, offline detection)
     └── tls.js           # HTTPS cert management (self-signed / custom / managed)
@@ -90,11 +93,20 @@ public/
 
 - **`certificates`** — `id, domains (space-separated), status (pending|issuing|active|expired|error|revoked|renewing), certbot_name, issued_at, expires_at, last_renewed_at, auto_renew, staging, error_message, created_at, updated_at`
 - **`users`** — `id, username, password (bcrypt hash), created_at, updated_at`
-- **`settings`** — `key, value, updated_at` (stores email, CF token, TLS domain, renewal schedule, notification configs, agent monitoring settings)
+- **`settings`** — `key, value, updated_at` (stores email, CF token (encrypted), TLS domain, renewal schedule, notification configs (encrypted), agent monitoring settings)
 - **`audit_log`** — `id, action, details (JSON), created_at`
 - **`sessions`** — `sid, sess, expired` (express-session store)
 - **`agents`** — `id, name, enrollment_token_hash, enrollment_expires_at, cert_fingerprint (SHA-256, UNIQUE), cert_expires_at, prev_cert_fingerprint (UNIQUE), prev_cert_expires_at, cert_serial, enabled, status (online/offline/NULL), next_contact_at, config_version, pending_actions (JSON), last_contact_at, last_contact_ip, created_at, updated_at`
 - **`deployments`** — `id, agent_id (FK → agents, CASCADE), certificate_id (FK → certificates, CASCADE), name, enabled, last_deployed_at, last_deployed_hash, created_at, updated_at` — ties an agent to a certificate
+
+### Security
+
+- **CSRF protection:** Synchronizer token pattern (`csrf.js`). Token stored in session, sent via `X-CSRF-Token` header. Validated on POST/PUT/PATCH/DELETE for session-authed routes. Exempt: agent API (mTLS), login/setup (pre-session), unauthenticated requests.
+- **Encryption at rest:** AES-256-GCM (`encryption.js`) for all secret settings values (`cloudflare_api_token`, all `notif_*` configs). Key stored in `data/.encryption-key`, auto-rotated every 30 days with crash-safe `previous_key` fallback.
+- **XSS prevention:** All user-supplied content passes through `escapeHtml()` before DOM insertion. No raw `innerHTML` with unsanitized input.
+- **SQL injection prevention:** All queries use parameterized statements. Integer route params validated with `parseIntId()` before reaching any query.
+- **Session security:** Server-side SQLite session store. Auto-generated 48-byte session secret. Auth routes return only `id`/`username` — no password hashes.
+- **Secret masking:** GET responses for notification channels and Cloudflare tokens return `hasToken: true` instead of raw values.
 
 ### Certificate Lifecycle
 
@@ -170,15 +182,17 @@ Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates
 ### Startup Sequence
 
 1. Initialize database (SQLite), run migrations
-2. Ensure admin user from env (if `ADMIN_USERNAME`/`ADMIN_PASSWORD` set)
-3. Validate Cloudflare token from env (if set — exits on failure)
-4. Check certbot availability (non-blocking warning if missing)
-5. Recover certificates stuck in `issuing`/`renewing` from crash → mark as `error`
-6. Load TLS credentials (self-signed / custom / managed)
-7. Initialize internal CA for mTLS (`ensureCA()`)
-8. Start HTTPS server with `requestCert: true` and CA in trust chain
-9. Start renewal scheduler (node-cron)
-10. Start agent monitor (node-cron, every 1 minute)
+2. Initialize encryption — ensure AES-256-GCM key exists, migrate plaintext secrets
+3. Ensure admin user from env (if `ADMIN_USERNAME`/`ADMIN_PASSWORD` set)
+4. Validate Cloudflare token from env (if set — exits on failure)
+5. Check certbot availability (non-blocking warning if missing)
+6. Recover certificates stuck in `issuing`/`renewing` from crash → mark as `error`
+7. Load TLS credentials (self-signed / custom / managed)
+8. Initialize internal CA for mTLS (`ensureCA()`)
+9. Start HTTPS server with `requestCert: true` and CA in trust chain
+10. Start renewal scheduler (node-cron)
+11. Start agent monitor (node-cron, every 1 minute)
+12. Start encryption key rotation cron (daily check, 30-day rotation)
 
 ## Guidelines
 
