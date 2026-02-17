@@ -3,26 +3,23 @@
    ============================================= */
 
 import { $, show, hide, toast } from './dom.js';
-import { api } from './api.js';
+import { api, setCsrfToken } from './api.js';
 import { navigate, setAuthenticated } from './router.js';
 
 // ---------- Auth API helpers ----------
 
 export async function checkAuth() {
   try {
-    const data = await api('GET', '/api/auth/me');
-    if (data.user) return { authenticated: true, needsSetup: false, user: data.user };
-  } catch { /* not logged in */ }
-
-  // Check if first-run setup is needed
-  try {
     const res = await fetch('/api/auth/me');
     const data = await res.json();
+    if (res.ok && data.user) {
+      if (data.csrfToken) setCsrfToken(data.csrfToken);
+      return { authenticated: true, needsSetup: false, user: data.user };
+    }
     if (data.needsSetup) {
       return { authenticated: false, needsSetup: true, emailFromEnv: !!data.emailFromEnv, emailValue: data.emailValue || '' };
     }
-  } catch { /* ignore */ }
-
+  } catch { /* network error */ }
   return { authenticated: false, needsSetup: false };
 }
 
@@ -48,6 +45,7 @@ export function init() {
 
     try {
       const data = await api('POST', '/api/auth/setup', { username, password, email });
+      if (data.csrfToken) setCsrfToken(data.csrfToken);
       setAuthenticated(true);
       $('#current-user').textContent = data.user.username;
       toast('Account created! Welcome.', 'success');
@@ -69,6 +67,7 @@ export function init() {
 
     try {
       const data = await api('POST', '/api/auth/login', { username, password });
+      if (data.csrfToken) setCsrfToken(data.csrfToken);
       setAuthenticated(true);
       $('#current-user').textContent = data.user.username;
       navigate('/');
@@ -94,15 +93,19 @@ export function loadLogin() {
 }
 
 /** Called when navigating to /setup. */
-export function loadSetup(params, authState) {
+export async function loadSetup() {
   hide($('#setup-error'));
 
-  // If email is from .env, pre-fill and lock the field
-  if (authState && authState.emailFromEnv) {
-    const setupEmailInput = $('#setup-email');
-    setupEmailInput.value = authState.emailValue || '';
-    setupEmailInput.disabled = true;
-    setupEmailInput.placeholder = 'Managed via environment variable';
-    setupEmailInput.removeAttribute('required');
-  }
+  // Fetch email info from server (self-sufficient — no cached state needed)
+  try {
+    const res = await fetch('/api/auth/me');
+    const data = await res.json();
+    if (data.emailFromEnv) {
+      const setupEmailInput = $('#setup-email');
+      setupEmailInput.value = data.emailValue || '';
+      setupEmailInput.disabled = true;
+      setupEmailInput.placeholder = 'Managed via environment variable';
+      setupEmailInput.removeAttribute('required');
+    }
+  } catch { /* ignore — field stays default */ }
 }

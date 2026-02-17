@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { getDb } = require('../db');
+const { getDb, toSqliteDatetime } = require('../db');
 const logger = require('../logger');
 
 let monitorTask = null;
@@ -31,6 +31,7 @@ function checkOfflineAgents() {
   const db = getDb();
   const { intervalSeconds, missedThreshold } = getAgentSettings();
   const graceSeconds = intervalSeconds * missedThreshold;
+  const cutoff = toSqliteDatetime(new Date(Date.now() - graceSeconds * 1000));
 
   // Find enrolled agents that are overdue and not already offline
   const overdueAgents = db.all(
@@ -39,8 +40,9 @@ function checkOfflineAgents() {
      WHERE enabled = 1
        AND cert_fingerprint IS NOT NULL
        AND next_contact_at IS NOT NULL
-       AND datetime(next_contact_at, '+${graceSeconds} seconds') < datetime('now')
+       AND next_contact_at < ?
        AND (status IS NULL OR status != 'offline')`,
+    [cutoff],
   );
 
   for (const agent of overdueAgents) {

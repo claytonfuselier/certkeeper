@@ -4,9 +4,6 @@ const fs = require('fs');
 const config = require('./config');
 const logger = require('./logger');
 
-// Ensure data directory exists
-fs.mkdirSync(config.paths.data, { recursive: true });
-
 let _db = null;
 
 /**
@@ -40,8 +37,11 @@ class Database {
   run(sql, params = []) {
     this._db.run(sql, params);
     const changes = this._db.getRowsModified();
-    const lastRow = this._db.exec('SELECT last_insert_rowid() as id');
-    const lastInsertRowid = lastRow.length > 0 ? lastRow[0].values[0][0] : 0;
+    let lastInsertRowid = 0;
+    if (sql.trimStart().substring(0, 6).toUpperCase() === 'INSERT') {
+      const lastRow = this._db.exec('SELECT last_insert_rowid() as id');
+      lastInsertRowid = lastRow.length > 0 ? lastRow[0].values[0][0] : 0;
+    }
     this._scheduleSave();
     return { changes, lastInsertRowid };
   }
@@ -74,6 +74,31 @@ class Database {
   save() {
     this._saveToDisk();
   }
+
+  /** Upsert a row in the settings table. */
+  upsertSetting(key, value) {
+    this.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+      [key, value],
+    );
+  }
+}
+
+/**
+ * Convert a JS Date to SQLite datetime string (YYYY-MM-DD HH:MM:SS).
+ */
+function toSqliteDatetime(date) {
+  return date.toISOString().replace('T', ' ').replace('Z', '');
+}
+
+/** Parse pending_actions JSON from an agent row into an array. */
+function parsePendingActions(agent) {
+  if (!agent.pending_actions) return [];
+  try {
+    const arr = JSON.parse(agent.pending_actions);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
 }
 
 async function initDatabase() {
@@ -325,6 +350,19 @@ async function initDatabase() {
     logger.error('Agent heartbeat migration failed', { err: migErr.message });
   }
 
+  // Add unique constraint on deployments(agent_id, certificate_id) if missing
+  try {
+    const idxExists = _db._db.exec(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_deployments_agent_cert'"
+    );
+    if (idxExists.length === 0 || idxExists[0].values.length === 0) {
+      _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_deployments_agent_cert ON deployments(agent_id, certificate_id)');
+      logger.info('Added unique index on deployments(agent_id, certificate_id)');
+    }
+  } catch (migErr) {
+    logger.error('Deployments unique index migration failed', { err: migErr.message });
+  }
+
   // Seed default agent monitoring settings if not present
   const agentDefaults = {
     agent_heartbeat_interval: '180',   // 3 minutes (in seconds)
@@ -349,4 +387,14 @@ function getDb() {
   return _db;
 }
 
-module.exports = { initDatabase, getDb };
+/**
+ * Parse a route parameter as a positive integer ID.
+ * Returns the integer or null if invalid.
+ */
+function parseIntId(val) {
+  const id = Number(val);
+  if (!Number.isInteger(id) || id < 1) return null;
+  return id;
+}
+
+module.exports = { initDatabase, getDb, toSqliteDatetime, parsePendingActions, parseIntId };

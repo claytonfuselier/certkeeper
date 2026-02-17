@@ -18,9 +18,6 @@ let currentPageId = null;
 let _isAuthenticated = false;
 let _authCheckFn = null; // set by app.js
 
-// Public auth routes that don't require authentication
-const PUBLIC_PATHS = ['/login', '/setup'];
-
 // ---------- API ----------
 
 /**

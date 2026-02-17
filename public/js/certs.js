@@ -22,7 +22,7 @@ function startPolling() {
   stopPolling();
   _pollTimer = setTimeout(async () => {
     _pollTimer = null;
-    if (currentPage() !== 'page-certificates') return;
+    if (currentPage() !== 'certificates') return;
     await loadCertificates();
   }, 3000);
 }
@@ -83,7 +83,7 @@ async function loadCertificates() {
       const tr = document.createElement('tr');
       if (hasError) tr.classList.add('cert-error-row');
       tr.innerHTML = `
-        <td>${cert.domains.map((d) => `<code>${d}</code>`).join(' ')}${serviceBadge}</td>
+        <td>${cert.domains.map((d) => `<code>${escapeHtml(d)}</code>`).join(' ')}${serviceBadge}</td>
         <td>${statusBadge(cert.status, cert.staging)}${inProgress ? ' <span class="spinner"></span>' : ''}${hasError ? ' <button class="btn-error-toggle" title="Show error details">ⓘ</button>' : ''}</td>
         <td>${formatDate(cert.expires_at)}</td>
         <td>

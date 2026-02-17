@@ -5,8 +5,6 @@ const certbot = require('./certbot');
 const { refreshServiceCert } = require('./tls');
 const { getDb } = require('../db');
 
-let activeCron = null;
-
 // ---------------------------------------------------------------------------
 // Day helpers (0 = Sunday … 6 = Saturday)
 // ---------------------------------------------------------------------------
@@ -65,13 +63,7 @@ function loadScheduleFromDb() {
 
 function saveScheduleToDb(sched) {
   const db = getDb();
-  const json = JSON.stringify(sched);
-  const existing = db.get('SELECT key FROM settings WHERE key = ?', [SCHED_KEY]);
-  if (existing) {
-    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = ?", [json, SCHED_KEY]);
-  } else {
-    db.run('INSERT INTO settings (key, value) VALUES (?, ?)', [SCHED_KEY, json]);
-  }
+  db.upsertSetting(SCHED_KEY, JSON.stringify(sched));
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +128,6 @@ function start() {
   if (tasks.length > 0) return;
 
   const resolved = resolveSchedule();
-  activeCron = resolved;
 
   logger.info('Starting renewal scheduler', { schedule: resolved.display });
 
@@ -149,7 +140,6 @@ function start() {
 function stop() {
   for (const t of tasks) t.stop();
   tasks = [];
-  activeCron = null;
   logger.info('Renewal scheduler stopped');
 }
 

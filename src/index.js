@@ -15,6 +15,8 @@ const agentMonitor = require('./services/agentMonitor');
 const { validateCloudflareToken } = require('./services/cloudflare');
 const { getTlsCredentials } = require('./services/tls');
 const { ensureCA, getCACert } = require('./services/ca');
+const { ensureEncryptionKey, migrateSecretsToEncrypted, startKeyRotationCron } = require('./services/encryption');
+const { csrfProtection } = require('./middleware/csrf');
 
 const authRoutes = require('./routes/auth');
 const certsRoutes = require('./routes/certs');
@@ -23,7 +25,6 @@ const notificationsRoutes = require('./routes/notifications');
 const settingsRoutes = require('./routes/settings');
 const agentsRoutes = require('./routes/agents');
 const agentApiRoutes = require('./routes/agent-api');
-const { requireAuth } = require('./middleware/auth');
 
 // ---------------------------------------------------------------------------
 // Ensure admin user exists (only when credentials are set via .env)
@@ -76,19 +77,42 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+// Security headers
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'");
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
 // Sessions backed by SQLite
-fs.mkdirSync(config.paths.data, { recursive: true });
+const sessionStore = new SqliteSessionStore();
 app.use(session({
-  store: new SqliteSessionStore(),
+  store: sessionStore,
   secret: config.sessionSecret,
   resave: false,
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
     secure: true,
+    sameSite: 'strict',
     maxAge: 24 * 60 * 60 * 1000, // 1 day
   },
 }));
+
+// Ensure CSRF token exists for authenticated sessions
+app.use((req, _res, next) => {
+  if (req.session?.user && !req.session.csrfToken) {
+    req.session.csrfToken = require('crypto').randomBytes(32).toString('hex');
+  }
+  next();
+});
+
+// CSRF protection for state-changing requests
+app.use(csrfProtection);
 
 // --- API Routes ---
 app.use('/api/auth', authRoutes);
@@ -132,6 +156,11 @@ async function start() {
   }
 
   await initDatabase();
+
+  // Initialize encryption (must happen after DB init, before any secret reads)
+  ensureEncryptionKey();
+  migrateSecretsToEncrypted();
+
   await ensureAdminUser();
   await validateEnvCloudflareToken();
 
@@ -197,6 +226,12 @@ async function start() {
 
   // Start the agent offline monitor
   agentMonitor.start();
+
+  // Start the encryption key rotation cron (daily check)
+  startKeyRotationCron();
+
+  // Clean up expired sessions every hour
+  setInterval(() => sessionStore.clearExpired(), 60 * 60 * 1000);
 }
 
 start().catch((err) => {

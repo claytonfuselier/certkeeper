@@ -190,3 +190,8 @@ Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates
 - `selfsigned` v5.5.0 quirks: `generate()` is async (returns Promise), ignores `days` option — use `notAfterDate` (Date object).
 - The internal CA (`ca.js`) is pure Node.js crypto. All ASN.1/DER encoding is done manually. Do not add openssl as a dependency.
 - Domains in the `certificates` table are stored as **space-separated strings** (e.g. `"example.com *.example.com"`). Routes split them into arrays for API responses: `cert.domains.split(' ')`.
+
+## TODOs
+
+- **TLS hot-reload:** `refreshServiceCert()` should call `server.setSecureContext()` (or restart the HTTPS listener) so that cert changes (both portal-driven and scheduled renewals) take effect without a full process restart.
+- **Packaging:** Compile this into a distributable package with bundled dependencies and an installer script for easy self-hosted deployment.

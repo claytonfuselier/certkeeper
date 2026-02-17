@@ -2,7 +2,7 @@
    CertKeeper — Settings Page
    ============================================= */
 
-import { $, $$, show, hide, toast, formatUptime } from './dom.js';
+import { $, $$, show, hide, toast, formatUptime, escapeHtml } from './dom.js';
 import { api } from './api.js';
 import {
   setCloudflareToken, setCloudflareSource, setCredentialsSource,
@@ -92,7 +92,7 @@ async function loadSettings() {
     const emailSrc = data.email?.source || 'none';
     if (emailVal) {
       const label = emailSrc === 'env' ? 'env' : 'database';
-      $('#st-email').innerHTML = `${emailVal} <span style="color:var(--text-muted);font-size:.8rem">(${label})</span>`;
+      $('#st-email').innerHTML = `${escapeHtml(emailVal)} <span style="color:var(--text-muted);font-size:.8rem">(${label})</span>`;
     } else {
       $('#st-email').innerHTML = '<span class="badge badge-expired">Not set</span>';
     }
@@ -113,7 +113,7 @@ async function loadSettings() {
 
     if (data.cloudflare.hasToken) {
       const sourceLabel = isFromEnv ? 'environment variable' : 'database (UI)';
-      statusEl.innerHTML = `<span class="badge badge-active">Configured</span> <span style="color:var(--text-muted);font-size:.85rem">Source: ${sourceLabel} &nbsp;·&nbsp; ${data.cloudflare.maskedToken}</span>`;
+      statusEl.innerHTML = `<span class="badge badge-active">Configured</span> <span style="color:var(--text-muted);font-size:.85rem">Source: ${sourceLabel} &nbsp;·&nbsp; ${escapeHtml(data.cloudflare.maskedToken)}</span>`;
     } else {
       statusEl.innerHTML = '<span class="badge badge-expired">Not configured</span> <span style="color:var(--text-muted);font-size:.85rem">DNS-01 challenges will be unavailable</span>';
     }
@@ -140,7 +140,7 @@ async function loadSettings() {
 
     if (emailValue) {
       const sourceLabel = emailSource === 'env' ? 'environment variable' : 'database (UI)';
-      emailStatusEl.innerHTML = `<span class="badge badge-active">Set</span> <span style="color:var(--text-muted);font-size:.85rem">${emailValue} &nbsp;·&nbsp; Source: ${sourceLabel}</span>`;
+      emailStatusEl.innerHTML = `<span class="badge badge-active">Set</span> <span style="color:var(--text-muted);font-size:.85rem">${escapeHtml(emailValue)} &nbsp;·&nbsp; Source: ${sourceLabel}</span>`;
     } else {
       emailStatusEl.innerHTML = '<span class="badge badge-expired">Not set</span> <span style="color:var(--text-muted);font-size:.85rem">Certificates will be registered without email</span>';
     }
@@ -213,7 +213,7 @@ async function loadSettings() {
     const schedForm = $('#schedule-form');
     const schedSubmitBtn = schedForm.querySelector('button[type="submit"]');
 
-    schedStatusEl.innerHTML = `<span class="badge badge-active">Active</span> <span style="color:var(--text-muted);font-size:.85rem">${schedInfo.display}</span>`;
+    schedStatusEl.innerHTML = `<span class="badge badge-active">Active</span> <span style="color:var(--text-muted);font-size:.85rem">${escapeHtml(schedInfo.display)}</span>`;
 
     if (schedInfo.fromEnv) {
       show(schedEnvNotice);

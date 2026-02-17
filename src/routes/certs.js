@@ -1,13 +1,34 @@
 const express = require('express');
 const config = require('../config');
-const { getDb } = require('../db');
+const { getDb, parseIntId } = require('../db');
 const logger = require('../logger');
 const certbot = require('../services/certbot');
-const { refreshServiceCert, getServiceDomain } = require('../services/tls');
+const { getEffectiveCloudflareToken } = require('../services/configHelpers');
+const { refreshServiceCert, isServiceCert } = require('../services/tls');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(requireAuth);
+
+// Domain name validation — prevents argument injection and path traversal
+const DOMAIN_RE = /^(\*\.)?([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+function validateDomains(domains) {
+  if (!domains || !Array.isArray(domains) || domains.length === 0) {
+    return 'domains must be a non-empty array';
+  }
+  if (domains.length > 100) {
+    return 'Too many domains (max 100)';
+  }
+  for (const d of domains) {
+    if (typeof d !== 'string' || d.length > 253) {
+      return `Invalid domain: must be a string no longer than 253 characters`;
+    }
+    if (!DOMAIN_RE.test(d)) {
+      return `Invalid domain format: "${d}". Use a valid FQDN (wildcards like *.example.com are allowed).`;
+    }
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/certs — list all tracked certificates
@@ -23,8 +44,10 @@ router.get('/', (req, res) => {
 // GET /api/certs/:id — single certificate details
 // ---------------------------------------------------------------------------
 router.get('/:id', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid certificate ID' });
   const db = getDb();
-  const cert = db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
+  const cert = db.get('SELECT * FROM certificates WHERE id = ?', [id]);
   if (!cert) return res.status(404).json({ error: 'Not found' });
   cert.domains = cert.domains.split(' ');
   res.json(cert);
@@ -38,12 +61,13 @@ router.post('/', async (req, res) => {
     const { domains } = req.body || {};
     const db = getDb();
 
-    if (!domains || !Array.isArray(domains) || domains.length === 0) {
-      return res.status(400).json({ error: 'domains must be a non-empty array' });
+    const domainErr = validateDomains(domains);
+    if (domainErr) {
+      return res.status(400).json({ error: domainErr });
     }
 
     // Require a Cloudflare API token (env var or DB) before issuing
-    const cfToken = certbot.getCloudflareToken();
+    const cfToken = getEffectiveCloudflareToken();
     if (!cfToken) {
       return res.status(400).json({ error: 'Cloudflare API token is not configured. Add one in Settings → Cloudflare API, or set the CLOUDFLARE_API_TOKEN environment variable.' });
     }
@@ -125,7 +149,7 @@ router.post('/', async (req, res) => {
     });
   } catch (err) {
     logger.error('Certificate issue error', { err });
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -134,8 +158,10 @@ router.post('/', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/:id/renew', async (req, res) => {
   try {
+    const id = parseIntId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid certificate ID' });
     const db = getDb();
-    const cert = db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
+    const cert = db.get('SELECT * FROM certificates WHERE id = ?', [id]);
     if (!cert) return res.status(404).json({ error: 'Not found' });
     if (!cert.certbot_name) return res.status(400).json({ error: 'Certificate has no certbot name — cannot renew' });
     if (cert.status === 'issuing' || cert.status === 'renewing') {
@@ -181,7 +207,7 @@ router.post('/:id/renew', async (req, res) => {
     });
   } catch (err) {
     logger.error('Certificate renew error', { err });
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -193,13 +219,14 @@ router.post('/:id/renew', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.delete('/:id', async (req, res) => {
   try {
+    const id = parseIntId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid certificate ID' });
     const db = getDb();
-    const cert = db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
+    const cert = db.get('SELECT * FROM certificates WHERE id = ?', [id]);
     if (!cert) return res.status(404).json({ error: 'Not found' });
 
     // Block revoke/remove of the certificate currently used for server TLS
-    const serviceDomain = getServiceDomain();
-    if (serviceDomain && cert.certbot_name === serviceDomain) {
+    if (isServiceCert(cert.id)) {
       return res.status(409).json({
         error: 'This certificate is currently used for the server\'s TLS. Switch to a different certificate in Settings → TLS before revoking or removing it.',
       });
@@ -242,7 +269,7 @@ router.delete('/:id', async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     logger.error('Certificate delete error', { err });
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -250,19 +277,26 @@ router.delete('/:id', async (req, res) => {
 // PATCH /api/certs/:id — update settings (e.g. auto_renew)
 // ---------------------------------------------------------------------------
 router.patch('/:id', (req, res) => {
-  const db = getDb();
-  const cert = db.get('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
-  if (!cert) return res.status(404).json({ error: 'Not found' });
+  try {
+    const id = parseIntId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid certificate ID' });
+    const db = getDb();
+    const cert = db.get('SELECT * FROM certificates WHERE id = ?', [id]);
+    if (!cert) return res.status(404).json({ error: 'Not found' });
 
-  const { auto_renew } = req.body || {};
-  if (typeof auto_renew !== 'undefined') {
-    db.run("UPDATE certificates SET auto_renew = ?, updated_at = datetime('now') WHERE id = ?",
-      [auto_renew ? 1 : 0, cert.id]);
+    const { auto_renew } = req.body || {};
+    if (typeof auto_renew !== 'undefined') {
+      db.run("UPDATE certificates SET auto_renew = ?, updated_at = datetime('now') WHERE id = ?",
+        [auto_renew ? 1 : 0, cert.id]);
+    }
+
+    const updated = db.get('SELECT * FROM certificates WHERE id = ?', [cert.id]);
+    updated.domains = updated.domains.split(' ');
+    res.json(updated);
+  } catch (err) {
+    logger.error('Certificate update error', { err });
+    return res.status(500).json({ error: 'Internal server error' });
   }
-
-  const updated = db.get('SELECT * FROM certificates WHERE id = ?', [cert.id]);
-  updated.domains = updated.domains.split(' ');
-  res.json(updated);
 });
 
 // ---------------------------------------------------------------------------

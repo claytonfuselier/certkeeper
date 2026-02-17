@@ -21,6 +21,10 @@ export function load() {
   loadAgents();
 }
 
+export function leave() {
+  // cleanup placeholder — add polling/timer cleanup here if needed
+}
+
 // ---------- Load Agents ----------
 
 async function loadAgents() {
@@ -91,7 +95,7 @@ async function loadAgents() {
 
       // Pending actions indicator
       if (agent.pending_actions && agent.pending_actions.length > 0) {
-        statusCol += ` <span style="font-size:.75rem;color:var(--warning)" title="Pending: ${agent.pending_actions.join(', ')}">⏳</span>`;
+        statusCol += ` <span style="font-size:.75rem;color:var(--warning)" title="Pending: ${escapeHtml(agent.pending_actions.join(', '))}">⏳</span>`;
       }
 
       // Agent row
@@ -462,7 +466,7 @@ function initAgents() {
     try {
       await api('POST', `/api/agents/${agentId}/deployments`, {
         name,
-        certificate_id: certId,
+        certificateId: certId,
       });
       hide($('#deployment-modal'));
       expandedAgents.add(parseInt(agentId, 10));

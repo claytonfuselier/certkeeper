@@ -1,17 +1,29 @@
 const express = require('express');
 const crypto = require('crypto');
-const { getDb } = require('../db');
+const { getDb, toSqliteDatetime, parsePendingActions, parseIntId } = require('../db');
 const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { hashToken } = require('../middleware/agentAuth');
 const { getCACert } = require('../services/ca');
-const { getTlsSource, getServiceDomain } = require('../services/tls');
+const { getTlsSource, isServiceCert } = require('../services/tls');
 
 const router = express.Router();
 router.use(requireAuth);
 
 // Enrollment token lifetime: 1 hour
 const ENROLLMENT_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+// Columns for admin agent queries — uses computed columns to avoid
+// leaking raw cert_fingerprint and enrollment_token_hash.
+const AGENT_COLUMNS = `id, name, enabled, status,
+  cert_expires_at, cert_serial,
+  (cert_fingerprint IS NOT NULL) AS enrolled,
+  SUBSTR(cert_fingerprint, 1, 16) AS cert_fingerprint_short,
+  (enrollment_token_hash IS NOT NULL) AS has_enrollment_token,
+  enrollment_expires_at,
+  config_version, pending_actions,
+  last_contact_at, last_contact_ip, next_contact_at,
+  created_at, updated_at`;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,20 +58,17 @@ function agentResponse(db, agent) {
   const base = {
     ...agent,
     enabled: !!agent.enabled,
+    enrolled: !!agent.enrolled,
+    has_enrollment_token: !!agent.has_enrollment_token,
     deployments: loadDeployments(db, agent.id),
   };
 
-  // Enrollment / mTLS status fields
-  base.enrolled = !!agent.cert_fingerprint;
-  base.cert_fingerprint_short = agent.cert_fingerprint
-    ? agent.cert_fingerprint.slice(0, 16)
-    : null;
+  base.cert_fingerprint_short = agent.cert_fingerprint_short || null;
   base.cert_expires_at = agent.cert_expires_at || null;
   base.cert_serial = agent.cert_serial || 0;
-  base.has_enrollment_token = !!agent.enrollment_token_hash;
   base.enrollment_expires_at = agent.enrollment_expires_at || null;
   // Check if enrollment token is still valid
-  if (agent.enrollment_token_hash && agent.enrollment_expires_at) {
+  if (agent.has_enrollment_token && agent.enrollment_expires_at) {
     const exp = new Date(agent.enrollment_expires_at + 'Z');
     base.enrollment_token_expired = exp <= new Date();
   } else {
@@ -76,21 +85,7 @@ function agentResponse(db, agent) {
   const globalVersion = parseInt(globalVersionRow?.value, 10) || 1;
   base.config_current = (agent.config_version || 0) >= globalVersion;
 
-  // Pending actions (for admin visibility)
-  let pending = [];
-  if (agent.pending_actions) {
-    try {
-      pending = JSON.parse(agent.pending_actions);
-      if (!Array.isArray(pending)) pending = [];
-    } catch { pending = []; }
-  }
-  base.pending_actions = pending;
-
-  // Remove sensitive fields from response
-  delete base.enrollment_token_hash;
-  delete base.cert_fingerprint;
-  delete base.prev_cert_fingerprint;
-  delete base.prev_cert_expires_at;
+  base.pending_actions = parsePendingActions(agent);
 
   return base;
 }
@@ -116,7 +111,7 @@ router.get('/ca-cert', (_req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/', (_req, res) => {
   const db = getDb();
-  const agents = db.all('SELECT * FROM agents ORDER BY created_at DESC');
+  const agents = db.all(`SELECT ${AGENT_COLUMNS} FROM agents ORDER BY created_at DESC`);
   res.json(agents.map((a) => agentResponse(db, a)));
 });
 
@@ -124,8 +119,10 @@ router.get('/', (_req, res) => {
 // GET /api/agents/:id — single agent detail
 // ---------------------------------------------------------------------------
 router.get('/:id', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+  const agent = db.get(`SELECT ${AGENT_COLUMNS} FROM agents WHERE id = ?`, [id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
   res.json(agentResponse(db, agent));
 });
@@ -145,8 +142,8 @@ router.post('/', (req, res) => {
     });
   }
 
-  if (!name || typeof name !== 'string' || name.trim().length < 1) {
-    return res.status(400).json({ error: 'Agent name is required' });
+  if (!name || typeof name !== 'string' || name.trim().length < 1 || name.trim().length > 255) {
+    return res.status(400).json({ error: 'Agent name is required (max 255 characters)' });
   }
 
   const db = getDb();
@@ -155,7 +152,7 @@ router.post('/', (req, res) => {
   const rawSecret = crypto.randomBytes(32).toString('hex');
   const enrollToken = `cke_${rawSecret}`;
   const enrollHash = hashToken(enrollToken);
-  const expiresAt = new Date(Date.now() + ENROLLMENT_TOKEN_TTL_MS).toISOString().replace('T', ' ').replace('Z', '');
+  const expiresAt = toSqliteDatetime(new Date(Date.now() + ENROLLMENT_TOKEN_TTL_MS));
 
   const { lastInsertRowid } = db.run(
     "INSERT INTO agents (name, enrollment_token_hash, enrollment_expires_at) VALUES (?, ?, ?)",
@@ -168,7 +165,7 @@ router.post('/', (req, res) => {
 
   logger.info('Agent created', { id: lastInsertRowid, name: name.trim() });
 
-  const agent = db.get('SELECT * FROM agents WHERE id = ?', [lastInsertRowid]);
+  const agent = db.get(`SELECT ${AGENT_COLUMNS} FROM agents WHERE id = ?`, [lastInsertRowid]);
   res.status(201).json({
     agent: agentResponse(db, agent),
     enrollmentToken: enrollToken, // shown ONCE
@@ -180,8 +177,10 @@ router.post('/', (req, res) => {
 // PATCH /api/agents/:id — update agent (name, enabled)
 // ---------------------------------------------------------------------------
 router.patch('/:id', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+  const agent = db.get('SELECT id FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
 
   const { name, enabled } = req.body || {};
@@ -193,7 +192,7 @@ router.patch('/:id', (req, res) => {
     db.run("UPDATE agents SET enabled = ?, updated_at = datetime('now') WHERE id = ?", [enabled ? 1 : 0, agent.id]);
   }
 
-  const updated = db.get('SELECT * FROM agents WHERE id = ?', [agent.id]);
+  const updated = db.get(`SELECT ${AGENT_COLUMNS} FROM agents WHERE id = ?`, [agent.id]);
   res.json(agentResponse(db, updated));
 });
 
@@ -202,15 +201,17 @@ router.patch('/:id', (req, res) => {
 // Clears the existing agent cert and generates a fresh 1-hour enrollment token.
 // ---------------------------------------------------------------------------
 router.post('/:id/regenerate-token', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+  const agent = db.get('SELECT id, name FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
 
   // Generate new enrollment token and clear existing cert (re-enrollment)
   const rawSecret = crypto.randomBytes(32).toString('hex');
   const enrollToken = `cke_${rawSecret}`;
   const enrollHash = hashToken(enrollToken);
-  const expiresAt = new Date(Date.now() + ENROLLMENT_TOKEN_TTL_MS).toISOString().replace('T', ' ').replace('Z', '');
+  const expiresAt = toSqliteDatetime(new Date(Date.now() + ENROLLMENT_TOKEN_TTL_MS));
 
   db.run(
     `UPDATE agents SET
@@ -241,8 +242,10 @@ router.post('/:id/regenerate-token', (req, res) => {
 // DELETE /api/agents/:id — delete an agent and all its deployments
 // ---------------------------------------------------------------------------
 router.delete('/:id', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+  const agent = db.get('SELECT id, name FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
 
   // CASCADE should handle deployments, but be explicit
@@ -264,8 +267,10 @@ router.delete('/:id', (req, res) => {
 // The action is stored in pending_actions and delivered on next heartbeat.
 // ---------------------------------------------------------------------------
 router.post('/:id/actions', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+  const agent = db.get('SELECT id, name, pending_actions FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
 
   const { action } = req.body || {};
@@ -275,16 +280,7 @@ router.post('/:id/actions', (req, res) => {
     return res.status(400).json({ error: `action must be one of: ${validActions.join(', ')}` });
   }
 
-  // Parse existing pending actions and append
-  let pending = [];
-  if (agent.pending_actions) {
-    try {
-      pending = JSON.parse(agent.pending_actions);
-      if (!Array.isArray(pending)) pending = [];
-    } catch {
-      pending = [];
-    }
-  }
+  let pending = parsePendingActions(agent);
 
   // Don't duplicate the same action
   if (!pending.includes(action)) {
@@ -312,8 +308,10 @@ router.post('/:id/actions', (req, res) => {
 // GET /api/agents/:id/deployments — list deployments for an agent
 // ---------------------------------------------------------------------------
 router.get('/:id/deployments', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT id FROM agents WHERE id = ?', [req.params.id]);
+  const agent = db.get('SELECT id FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Agent not found' });
   res.json(loadDeployments(db, agent.id));
 });
@@ -323,14 +321,16 @@ router.get('/:id/deployments', (req, res) => {
 // Body: { name, certificateId }
 // ---------------------------------------------------------------------------
 router.post('/:id/deployments', (req, res) => {
+  const id = parseIntId(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT * FROM agents WHERE id = ?', [req.params.id]);
+  const agent = db.get('SELECT id, name FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Agent not found' });
 
   const { name, certificateId } = req.body || {};
 
-  if (!name || typeof name !== 'string' || name.trim().length < 1) {
-    return res.status(400).json({ error: 'Deployment name is required' });
+  if (!name || typeof name !== 'string' || name.trim().length < 1 || name.trim().length > 255) {
+    return res.status(400).json({ error: 'Deployment name is required (max 255 characters)' });
   }
   if (!certificateId || typeof certificateId !== 'number') {
     return res.status(400).json({ error: 'certificateId is required and must be a number' });
@@ -342,14 +342,10 @@ router.post('/:id/deployments', (req, res) => {
   }
 
   // Block deploying the certificate that is currently used for server TLS
-  const serviceDomain = getServiceDomain();
-  if (serviceDomain) {
-    const serviceCert = db.get("SELECT id FROM certificates WHERE certbot_name = ?", [serviceDomain]);
-    if (serviceCert && serviceCert.id === cert.id) {
-      return res.status(400).json({
-        error: 'This certificate is currently used for the server\'s TLS and cannot be deployed to agents. Deploying it would allow agents to impersonate the server.',
-      });
-    }
+  if (isServiceCert(cert.id)) {
+    return res.status(400).json({
+      error: 'This certificate is currently used for the server\'s TLS and cannot be deployed to agents. Deploying it would allow agents to impersonate the server.',
+    });
   }
 
   const { lastInsertRowid } = db.run(
@@ -372,10 +368,13 @@ router.post('/:id/deployments', (req, res) => {
 // Body: { name?, certificateId?, enabled? }
 // ---------------------------------------------------------------------------
 router.patch('/:agentId/deployments/:depId', (req, res) => {
+  const agentId = parseIntId(req.params.agentId);
+  const depId = parseIntId(req.params.depId);
+  if (!agentId || !depId) return res.status(400).json({ error: 'Invalid ID' });
   const db = getDb();
   const dep = db.get(
     'SELECT * FROM deployments WHERE id = ? AND agent_id = ?',
-    [req.params.depId, req.params.agentId],
+    [depId, agentId],
   );
   if (!dep) return res.status(404).json({ error: 'Deployment not found' });
 
@@ -389,14 +388,10 @@ router.patch('/:agentId/deployments/:depId', (req, res) => {
     if (!cert) return res.status(404).json({ error: 'Certificate not found' });
 
     // Block deploying the certificate that is currently used for server TLS
-    const serviceDomain = getServiceDomain();
-    if (serviceDomain) {
-      const serviceCert = db.get("SELECT id FROM certificates WHERE certbot_name = ?", [serviceDomain]);
-      if (serviceCert && serviceCert.id === cert.id) {
-        return res.status(400).json({
-          error: 'This certificate is currently used for the server\'s TLS and cannot be deployed to agents. Deploying it would allow agents to impersonate the server.',
-        });
-      }
+    if (isServiceCert(cert.id)) {
+      return res.status(400).json({
+        error: 'This certificate is currently used for the server\'s TLS and cannot be deployed to agents. Deploying it would allow agents to impersonate the server.',
+      });
     }
 
     db.run("UPDATE deployments SET certificate_id = ?, updated_at = datetime('now') WHERE id = ?", [cert.id, dep.id]);
@@ -413,10 +408,13 @@ router.patch('/:agentId/deployments/:depId', (req, res) => {
 // DELETE /api/agents/:agentId/deployments/:depId — remove a deployment
 // ---------------------------------------------------------------------------
 router.delete('/:agentId/deployments/:depId', (req, res) => {
+  const agentId = parseIntId(req.params.agentId);
+  const depId = parseIntId(req.params.depId);
+  if (!agentId || !depId) return res.status(400).json({ error: 'Invalid ID' });
   const db = getDb();
   const dep = db.get(
     'SELECT * FROM deployments WHERE id = ? AND agent_id = ?',
-    [req.params.depId, req.params.agentId],
+    [depId, agentId],
   );
   if (!dep) return res.status(404).json({ error: 'Deployment not found' });
 

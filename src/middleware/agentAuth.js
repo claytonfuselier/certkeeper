@@ -18,6 +18,12 @@ function certFingerprintFromDer(derBuffer) {
   return crypto.createHash('sha256').update(derBuffer).digest('hex');
 }
 
+// Columns needed from agents table for mTLS authentication + downstream handlers
+const AGENT_AUTH_COLUMNS = `id, name, enabled, status,
+  cert_expires_at, prev_cert_expires_at, cert_serial,
+  pending_actions, config_version,
+  last_contact_at, next_contact_at, last_contact_ip`;
+
 /**
  * Try to authenticate an agent via its mTLS agent certificate.
  * Returns the agent row if successful, null otherwise.
@@ -34,7 +40,7 @@ function authenticateViaMTLS(req) {
 
   // Try current cert fingerprint first
   let agent = db.get(
-    "SELECT * FROM agents WHERE cert_fingerprint = ?",
+    `SELECT ${AGENT_AUTH_COLUMNS} FROM agents WHERE cert_fingerprint = ?`,
     [fingerprint],
   );
 
@@ -52,7 +58,7 @@ function authenticateViaMTLS(req) {
 
   // Fall back to previous cert fingerprint (grace period after renewal)
   agent = db.get(
-    "SELECT * FROM agents WHERE prev_cert_fingerprint = ?",
+    `SELECT ${AGENT_AUTH_COLUMNS} FROM agents WHERE prev_cert_fingerprint = ?`,
     [fingerprint],
   );
 
@@ -96,13 +102,16 @@ function requireAgentAuth(req, res, next) {
   req.agent = agent;
   req.agentAuthMethod = 'mtls';
 
-  // Update last contact (fire-and-forget — don't block the request)
-  const db = getDb();
-  const ip = req.ip || req.connection?.remoteAddress || '';
-  db.run(
-    "UPDATE agents SET last_contact_at = datetime('now'), last_contact_ip = ?, updated_at = datetime('now') WHERE id = ?",
-    [ip, agent.id],
-  );
+  // Update last contact — skip for heartbeat requests (the heartbeat handler manages it)
+  const isHeartbeat = req.method === 'POST' && req.path === '/heartbeat';
+  if (!isHeartbeat) {
+    const db = getDb();
+    const ip = req.ip || req.socket?.remoteAddress || '';
+    db.run(
+      "UPDATE agents SET last_contact_at = datetime('now'), last_contact_ip = ?, updated_at = datetime('now') WHERE id = ?",
+      [ip, agent.id],
+    );
+  }
 
   next();
 }
@@ -131,7 +140,9 @@ function requireEnrollmentAuth(req, res, next) {
   const db = getDb();
 
   const agent = db.get(
-    "SELECT * FROM agents WHERE enrollment_token_hash = ?",
+    `SELECT id, name, enabled, enrollment_expires_at,
+            (cert_fingerprint IS NOT NULL) AS already_enrolled
+     FROM agents WHERE enrollment_token_hash = ?`,
     [hash],
   );
 
@@ -152,7 +163,7 @@ function requireEnrollmentAuth(req, res, next) {
   }
 
   // Check if agent already has a cert (already enrolled)
-  if (agent.cert_fingerprint) {
+  if (agent.already_enrolled) {
     return res.status(409).json({
       error: 'Agent is already enrolled. Use the admin UI to reset enrollment if needed.',
     });

@@ -9,13 +9,70 @@ import { api } from './api.js';
 
 export function init() {
   initNotificationsTabs();
-  initNotifEmailForm();
-  initNotifWebhookForm();
-  initNotifPushoverForm();
-  initNotifGotifyForm();
-  initNotifSlackForm();
-  initNotifDiscordForm();
-  initNotifTelegramForm();
+
+  initNotifForm('email', () => ({
+    enabled: $('#notif-email-enabled').checked,
+    to: $('#notif-email-to').value.trim(),
+    events: collectEvents('notif-email-event'),
+  }));
+
+  initNotifForm('webhook', () => {
+    const body = {
+      enabled: $('#notif-webhook-enabled').checked,
+      url: $('#notif-webhook-url').value.trim(),
+      events: collectEvents('notif-webhook-event'),
+    };
+    const secret = $('#notif-webhook-secret').value.trim();
+    if (secret) body.secret = secret;
+    return body;
+  });
+
+  initNotifForm('pushover', () => {
+    const body = {
+      enabled: $('#notif-pushover-enabled').checked,
+      userKey: $('#notif-pushover-user').value.trim(),
+      events: collectEvents('notif-pushover-event'),
+    };
+    const token = $('#notif-pushover-token').value.trim();
+    if (token) body.appToken = token;
+    return body;
+  });
+
+  initNotifForm('gotify', () => {
+    const body = {
+      enabled: $('#notif-gotify-enabled').checked,
+      url: $('#notif-gotify-url').value.trim(),
+      priority: parseInt($('#notif-gotify-priority').value, 10),
+      events: collectEvents('notif-gotify-event'),
+    };
+    const token = $('#notif-gotify-token').value.trim();
+    if (token) body.appToken = token;
+    return body;
+  });
+
+  initNotifForm('slack', () => ({
+    enabled: $('#notif-slack-enabled').checked,
+    webhookUrl: $('#notif-slack-webhook').value.trim(),
+    channel: $('#notif-slack-channel').value.trim(),
+    events: collectEvents('notif-slack-event'),
+  }));
+
+  initNotifForm('discord', () => ({
+    enabled: $('#notif-discord-enabled').checked,
+    webhookUrl: $('#notif-discord-webhook').value.trim(),
+    events: collectEvents('notif-discord-event'),
+  }));
+
+  initNotifForm('telegram', () => {
+    const body = {
+      enabled: $('#notif-telegram-enabled').checked,
+      chatId: $('#notif-telegram-chat-id').value.trim(),
+      events: collectEvents('notif-telegram-event'),
+    };
+    const token = $('#notif-telegram-bot-token').value.trim();
+    if (token) body.botToken = token;
+    return body;
+  });
 }
 
 export function load(params) {
@@ -134,254 +191,33 @@ function collectEvents(name) {
   return $$(`input[name="${name}"]:checked`).map((cb) => cb.value);
 }
 
-// ---------- Channel Forms ----------
+// ---------- Channel Form Factory ----------
 
-function initNotifEmailForm() {
-  const form = $('#notif-email-form');
-  const errorEl = $('#notif-email-error');
-  const successEl = $('#notif-email-success');
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    hide(errorEl);
-    hide(successEl);
-    try {
-      await api('PUT', '/api/notifications/email', {
-        enabled: $('#notif-email-enabled').checked,
-        to: $('#notif-email-to').value.trim(),
-        events: collectEvents('notif-email-event'),
-      });
-      successEl.textContent = 'Email notification settings saved.';
-      show(successEl);
-      toast('Email notifications saved', 'success');
-    } catch (err) {
-      errorEl.textContent = err.message;
-      show(errorEl);
-    }
-  });
-
-  $('#notif-email-test-btn').addEventListener('click', async () => {
-    try {
-      await api('POST', '/api/notifications/email/test');
-      toast('Test email sent', 'success');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
-}
-
-function initNotifWebhookForm() {
-  const form = $('#notif-webhook-form');
-  const errorEl = $('#notif-webhook-error');
-  const successEl = $('#notif-webhook-success');
+function initNotifForm(channel, buildBody) {
+  const label = channel.charAt(0).toUpperCase() + channel.slice(1);
+  const form = $(`#notif-${channel}-form`);
+  const errorEl = $(`#notif-${channel}-error`);
+  const successEl = $(`#notif-${channel}-success`);
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     hide(errorEl);
     hide(successEl);
     try {
-      const body = {
-        enabled: $('#notif-webhook-enabled').checked,
-        url: $('#notif-webhook-url').value.trim(),
-        events: collectEvents('notif-webhook-event'),
-      };
-      const secret = $('#notif-webhook-secret').value.trim();
-      if (secret) body.secret = secret;
-      await api('PUT', '/api/notifications/webhook', body);
-      successEl.textContent = 'Webhook notification settings saved.';
+      await api('PUT', `/api/notifications/${channel}`, buildBody());
+      successEl.textContent = `${label} notification settings saved.`;
       show(successEl);
-      toast('Webhook notifications saved', 'success');
+      toast(`${label} notifications saved`, 'success');
     } catch (err) {
       errorEl.textContent = err.message;
       show(errorEl);
     }
   });
 
-  $('#notif-webhook-test-btn').addEventListener('click', async () => {
+  $(`#notif-${channel}-test-btn`).addEventListener('click', async () => {
     try {
-      await api('POST', '/api/notifications/webhook/test');
-      toast('Test webhook sent', 'success');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
-}
-
-function initNotifPushoverForm() {
-  const form = $('#notif-pushover-form');
-  const errorEl = $('#notif-pushover-error');
-  const successEl = $('#notif-pushover-success');
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    hide(errorEl);
-    hide(successEl);
-    try {
-      const body = {
-        enabled: $('#notif-pushover-enabled').checked,
-        userKey: $('#notif-pushover-user').value.trim(),
-        events: collectEvents('notif-pushover-event'),
-      };
-      const token = $('#notif-pushover-token').value.trim();
-      if (token) body.appToken = token;
-      await api('PUT', '/api/notifications/pushover', body);
-      successEl.textContent = 'Pushover notification settings saved.';
-      show(successEl);
-      toast('Pushover notifications saved', 'success');
-    } catch (err) {
-      errorEl.textContent = err.message;
-      show(errorEl);
-    }
-  });
-
-  $('#notif-pushover-test-btn').addEventListener('click', async () => {
-    try {
-      await api('POST', '/api/notifications/pushover/test');
-      toast('Test push sent', 'success');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
-}
-
-function initNotifGotifyForm() {
-  const form = $('#notif-gotify-form');
-  const errorEl = $('#notif-gotify-error');
-  const successEl = $('#notif-gotify-success');
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    hide(errorEl);
-    hide(successEl);
-    try {
-      const body = {
-        enabled: $('#notif-gotify-enabled').checked,
-        url: $('#notif-gotify-url').value.trim(),
-        priority: parseInt($('#notif-gotify-priority').value, 10),
-        events: collectEvents('notif-gotify-event'),
-      };
-      const token = $('#notif-gotify-token').value.trim();
-      if (token) body.appToken = token;
-      await api('PUT', '/api/notifications/gotify', body);
-      successEl.textContent = 'Gotify notification settings saved.';
-      show(successEl);
-      toast('Gotify notifications saved', 'success');
-    } catch (err) {
-      errorEl.textContent = err.message;
-      show(errorEl);
-    }
-  });
-
-  $('#notif-gotify-test-btn').addEventListener('click', async () => {
-    try {
-      await api('POST', '/api/notifications/gotify/test');
-      toast('Test Gotify message sent', 'success');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
-}
-
-function initNotifSlackForm() {
-  const form = $('#notif-slack-form');
-  const errorEl = $('#notif-slack-error');
-  const successEl = $('#notif-slack-success');
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    hide(errorEl);
-    hide(successEl);
-    try {
-      await api('PUT', '/api/notifications/slack', {
-        enabled: $('#notif-slack-enabled').checked,
-        webhookUrl: $('#notif-slack-webhook').value.trim(),
-        channel: $('#notif-slack-channel').value.trim(),
-        events: collectEvents('notif-slack-event'),
-      });
-      successEl.textContent = 'Slack notification settings saved.';
-      show(successEl);
-      toast('Slack notifications saved', 'success');
-    } catch (err) {
-      errorEl.textContent = err.message;
-      show(errorEl);
-    }
-  });
-
-  $('#notif-slack-test-btn').addEventListener('click', async () => {
-    try {
-      await api('POST', '/api/notifications/slack/test');
-      toast('Test Slack message sent', 'success');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
-}
-
-function initNotifDiscordForm() {
-  const form = $('#notif-discord-form');
-  const errorEl = $('#notif-discord-error');
-  const successEl = $('#notif-discord-success');
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    hide(errorEl);
-    hide(successEl);
-    try {
-      await api('PUT', '/api/notifications/discord', {
-        enabled: $('#notif-discord-enabled').checked,
-        webhookUrl: $('#notif-discord-webhook').value.trim(),
-        events: collectEvents('notif-discord-event'),
-      });
-      successEl.textContent = 'Discord notification settings saved.';
-      show(successEl);
-      toast('Discord notifications saved', 'success');
-    } catch (err) {
-      errorEl.textContent = err.message;
-      show(errorEl);
-    }
-  });
-
-  $('#notif-discord-test-btn').addEventListener('click', async () => {
-    try {
-      await api('POST', '/api/notifications/discord/test');
-      toast('Test Discord message sent', 'success');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  });
-}
-
-function initNotifTelegramForm() {
-  const form = $('#notif-telegram-form');
-  const errorEl = $('#notif-telegram-error');
-  const successEl = $('#notif-telegram-success');
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    hide(errorEl);
-    hide(successEl);
-    try {
-      const body = {
-        enabled: $('#notif-telegram-enabled').checked,
-        chatId: $('#notif-telegram-chat-id').value.trim(),
-        events: collectEvents('notif-telegram-event'),
-      };
-      const token = $('#notif-telegram-bot-token').value.trim();
-      if (token) body.botToken = token;
-      await api('PUT', '/api/notifications/telegram', body);
-      successEl.textContent = 'Telegram notification settings saved.';
-      show(successEl);
-      toast('Telegram notifications saved', 'success');
-    } catch (err) {
-      errorEl.textContent = err.message;
-      show(errorEl);
-    }
-  });
-
-  $('#notif-telegram-test-btn').addEventListener('click', async () => {
-    try {
-      await api('POST', '/api/notifications/telegram/test');
-      toast('Test Telegram message sent', 'success');
+      await api('POST', `/api/notifications/${channel}/test`);
+      toast(`Test ${label} notification sent`, 'success');
     } catch (err) {
       toast(err.message, 'error');
     }

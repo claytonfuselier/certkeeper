@@ -2,11 +2,13 @@
    CertKeeper — Dashboard Page
    ============================================= */
 
-import { $, toast, formatDate } from './dom.js';
+import { $, toast, formatDate, escapeHtml } from './dom.js';
 import { api } from './api.js';
 import { setCloudflareToken, setCloudflareSource } from './state.js';
 
 // ---------- Lifecycle ----------
+
+export function init() { /* no one-time setup needed */ }
 
 export function load() {
   loadDashboard();
@@ -32,8 +34,8 @@ async function loadDashboard() {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${formatDate(row.created_at)}</td>
-        <td>${row.action}</td>
-        <td style="color:var(--text-muted)">${row.details || ''}</td>
+        <td>${escapeHtml(row.action)}</td>
+        <td style="color:var(--text-muted)">${escapeHtml(row.details || '')}</td>
       `;
       tbody.appendChild(tr);
     }

@@ -2,6 +2,7 @@ const express = require('express');
 const { getDb } = require('../db');
 const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
+const { encrypt, decrypt } = require('../services/encryption');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -10,26 +11,23 @@ router.use(requireAuth);
 // Helpers
 // ---------------------------------------------------------------------------
 
-const VALID_EVENTS = ['issued', 'renewed', 'expiry_warning', 'error', 'revoked'];
+const VALID_EVENTS = ['issued', 'renewed', 'expiry_warning', 'error', 'revoked', 'agent_offline', 'agent_online'];
 const DEFAULT_EVENTS = ['issued', 'renewed', 'expiry_warning', 'error'];
 
 function getChannelConfig(channel) {
   const db = getDb();
   const row = db.get('SELECT value FROM settings WHERE key = ?', [`notif_${channel}`]);
   if (!row) return null;
-  try { return JSON.parse(row.value); } catch { return null; }
+  try {
+    const decrypted = decrypt(row.value);
+    return JSON.parse(decrypted);
+  } catch { return null; }
 }
 
-function saveChannelConfig(channel, config) {
+function saveChannelConfig(channel, cfg) {
   const db = getDb();
-  const json = JSON.stringify(config);
-  const key = `notif_${channel}`;
-  const existing = db.get('SELECT key FROM settings WHERE key = ?', [key]);
-  if (existing) {
-    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = ?", [json, key]);
-  } else {
-    db.run('INSERT INTO settings (key, value) VALUES (?, ?)', [key, json]);
-  }
+  const encrypted = encrypt(JSON.stringify(cfg));
+  db.upsertSetting(`notif_${channel}`, encrypted);
 }
 
 function validateEvents(events) {
@@ -37,10 +35,14 @@ function validateEvents(events) {
   return events.filter((e) => VALID_EVENTS.includes(e));
 }
 
-function maskSecret(str) {
-  if (!str) return '';
-  if (str.length <= 6) return '••••••';
-  return str.slice(0, 3) + '•'.repeat(Math.min(str.length - 6, 20)) + str.slice(-3);
+/** Save channel config and log the change to audit_log. */
+function saveChannelAndAudit(channel, channelConfig) {
+  saveChannelConfig(channel, channelConfig);
+  logger.info(`${channel} notification settings updated`, { enabled: channelConfig.enabled });
+  const db = getDb();
+  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+    `notif_${channel}_updated`, JSON.stringify({ enabled: channelConfig.enabled }),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,21 +112,15 @@ router.put('/email', (req, res) => {
     return res.status(400).json({ error: 'Invalid email address' });
   }
 
-  const config = {
+  const channelCfg = {
     enabled: !!enabled,
     to: (to || '').trim(),
     events: validateEvents(events),
   };
 
-  saveChannelConfig('email', config);
-  logger.info('Email notification settings updated', { enabled: config.enabled });
+  saveChannelAndAudit('email', channelCfg);
 
-  const db = getDb();
-  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'notif_email_updated', JSON.stringify({ enabled: config.enabled }),
-  ]);
-
-  res.json({ ok: true, email: config });
+  res.json({ ok: true, email: channelCfg });
 });
 
 // ---------------------------------------------------------------------------
@@ -143,28 +139,22 @@ router.put('/webhook', (req, res) => {
 
   // Preserve existing secret if not provided in update
   const existing = getChannelConfig('webhook') || {};
-  const config = {
+  const channelCfg = {
     enabled: !!enabled,
     url: (url || '').trim(),
     secret: secret !== undefined ? secret.trim() : (existing.secret || ''),
     events: validateEvents(events),
   };
 
-  saveChannelConfig('webhook', config);
-  logger.info('Webhook notification settings updated', { enabled: config.enabled });
-
-  const db = getDb();
-  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'notif_webhook_updated', JSON.stringify({ enabled: config.enabled }),
-  ]);
+  saveChannelAndAudit('webhook', channelCfg);
 
   res.json({
     ok: true,
     webhook: {
-      enabled: config.enabled,
-      url: config.url,
-      hasSecret: !!config.secret,
-      events: config.events,
+      enabled: channelCfg.enabled,
+      url: channelCfg.url,
+      hasSecret: !!channelCfg.secret,
+      events: channelCfg.events,
     },
   });
 });
@@ -181,39 +171,30 @@ router.put('/pushover', (req, res) => {
 
   // Preserve existing token if not provided in update
   const existing = getChannelConfig('pushover') || {};
-  const config = {
+  const channelCfg = {
     enabled: !!enabled,
     userKey: (userKey || '').trim(),
     appToken: appToken !== undefined ? appToken.trim() : (existing.appToken || ''),
     events: validateEvents(events),
   };
 
-  if (enabled && !config.appToken) {
+  if (enabled && !channelCfg.appToken) {
     return res.status(400).json({ error: 'Pushover application token is required when enabled' });
   }
 
-  saveChannelConfig('pushover', config);
-  logger.info('Pushover notification settings updated', { enabled: config.enabled });
-
-  const db = getDb();
-  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'notif_pushover_updated', JSON.stringify({ enabled: config.enabled }),
-  ]);
+  saveChannelAndAudit('pushover', channelCfg);
 
   res.json({
     ok: true,
     pushover: {
-      enabled: config.enabled,
-      userKey: config.userKey,
-      hasToken: !!config.appToken,
-      events: config.events,
+      enabled: channelCfg.enabled,
+      userKey: channelCfg.userKey,
+      hasToken: !!channelCfg.appToken,
+      events: channelCfg.events,
     },
   });
 });
 
-// ---------------------------------------------------------------------------
-// POST /api/notifications/:channel/test — send a test notification (stub)
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // PUT /api/notifications/gotify — save Gotify notification config
 // ---------------------------------------------------------------------------
@@ -228,7 +209,7 @@ router.put('/gotify', (req, res) => {
   }
 
   const existing = getChannelConfig('gotify') || {};
-  const config = {
+  const channelCfg = {
     enabled: !!enabled,
     url: (url || '').trim().replace(/\/$/, ''),
     appToken: appToken !== undefined ? appToken.trim() : (existing.appToken || ''),
@@ -236,26 +217,20 @@ router.put('/gotify', (req, res) => {
     events: validateEvents(events),
   };
 
-  if (enabled && !config.appToken) {
+  if (enabled && !channelCfg.appToken) {
     return res.status(400).json({ error: 'Gotify application token is required when enabled' });
   }
 
-  saveChannelConfig('gotify', config);
-  logger.info('Gotify notification settings updated', { enabled: config.enabled });
-
-  const db = getDb();
-  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'notif_gotify_updated', JSON.stringify({ enabled: config.enabled }),
-  ]);
+  saveChannelAndAudit('gotify', channelCfg);
 
   res.json({
     ok: true,
     gotify: {
-      enabled: config.enabled,
-      url: config.url,
-      hasToken: !!config.appToken,
-      priority: config.priority,
-      events: config.events,
+      enabled: channelCfg.enabled,
+      url: channelCfg.url,
+      hasToken: !!channelCfg.appToken,
+      priority: channelCfg.priority,
+      events: channelCfg.events,
     },
   });
 });
@@ -273,22 +248,16 @@ router.put('/slack', (req, res) => {
     return res.status(400).json({ error: 'Slack webhook URL must be a valid HTTP(S) URL' });
   }
 
-  const config = {
+  const channelCfg = {
     enabled: !!enabled,
     webhookUrl: (webhookUrl || '').trim(),
     channel: (channel || '').trim(),
     events: validateEvents(events),
   };
 
-  saveChannelConfig('slack', config);
-  logger.info('Slack notification settings updated', { enabled: config.enabled });
+  saveChannelAndAudit('slack', channelCfg);
 
-  const db = getDb();
-  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'notif_slack_updated', JSON.stringify({ enabled: config.enabled }),
-  ]);
-
-  res.json({ ok: true, slack: config });
+  res.json({ ok: true, slack: channelCfg });
 });
 
 // ---------------------------------------------------------------------------
@@ -304,21 +273,15 @@ router.put('/discord', (req, res) => {
     return res.status(400).json({ error: 'Discord webhook URL must be a valid HTTP(S) URL' });
   }
 
-  const config = {
+  const channelCfg = {
     enabled: !!enabled,
     webhookUrl: (webhookUrl || '').trim(),
     events: validateEvents(events),
   };
 
-  saveChannelConfig('discord', config);
-  logger.info('Discord notification settings updated', { enabled: config.enabled });
+  saveChannelAndAudit('discord', channelCfg);
 
-  const db = getDb();
-  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'notif_discord_updated', JSON.stringify({ enabled: config.enabled }),
-  ]);
-
-  res.json({ ok: true, discord: config });
+  res.json({ ok: true, discord: channelCfg });
 });
 
 // ---------------------------------------------------------------------------
@@ -332,32 +295,26 @@ router.put('/telegram', (req, res) => {
   }
 
   const existing = getChannelConfig('telegram') || {};
-  const config = {
+  const channelCfg = {
     enabled: !!enabled,
     botToken: botToken !== undefined ? botToken.trim() : (existing.botToken || ''),
     chatId: (chatId || '').trim(),
     events: validateEvents(events),
   };
 
-  if (enabled && !config.botToken) {
+  if (enabled && !channelCfg.botToken) {
     return res.status(400).json({ error: 'Telegram bot token is required when enabled' });
   }
 
-  saveChannelConfig('telegram', config);
-  logger.info('Telegram notification settings updated', { enabled: config.enabled });
-
-  const db = getDb();
-  db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-    'notif_telegram_updated', JSON.stringify({ enabled: config.enabled }),
-  ]);
+  saveChannelAndAudit('telegram', channelCfg);
 
   res.json({
     ok: true,
     telegram: {
-      enabled: config.enabled,
-      chatId: config.chatId,
-      hasBotToken: !!config.botToken,
-      events: config.events,
+      enabled: channelCfg.enabled,
+      chatId: channelCfg.chatId,
+      hasBotToken: !!channelCfg.botToken,
+      events: channelCfg.events,
     },
   });
 });
@@ -366,21 +323,26 @@ router.put('/telegram', (req, res) => {
 // POST /api/notifications/:channel/test — send a test notification (stub)
 // ---------------------------------------------------------------------------
 router.post('/:channel/test', (req, res) => {
-  const { channel } = req.params;
-  const validChannels = ['email', 'webhook', 'pushover', 'gotify', 'slack', 'discord', 'telegram'];
-  if (!validChannels.includes(channel)) {
-    return res.status(400).json({ error: 'Invalid notification channel' });
+  try {
+    const { channel } = req.params;
+    const validChannels = ['email', 'webhook', 'pushover', 'gotify', 'slack', 'discord', 'telegram'];
+    if (!validChannels.includes(channel)) {
+      return res.status(400).json({ error: 'Invalid notification channel' });
+    }
+
+    const channelCfg = getChannelConfig(channel);
+    if (!channelCfg || !channelCfg.enabled) {
+      return res.status(400).json({ error: `${channel} notifications are not enabled` });
+    }
+
+    // TODO: Implement actual notification sending
+    logger.info('Test notification requested (stub)', { channel });
+
+    res.json({ ok: true, message: `Test ${channel} notification queued (not yet implemented)` });
+  } catch (err) {
+    logger.error('Test notification error', { err });
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  const config = getChannelConfig(channel);
-  if (!config || !config.enabled) {
-    return res.status(400).json({ error: `${channel} notifications are not enabled` });
-  }
-
-  // TODO: Implement actual notification sending
-  logger.info('Test notification requested (stub)', { channel });
-
-  res.json({ ok: true, message: `Test ${channel} notification queued (not yet implemented)` });
 });
 
 module.exports = router;

@@ -5,8 +5,10 @@ const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { validateCloudflareToken } = require('../services/cloudflare');
 const { ensureCloudflareIni, deleteCloudflareIni } = require('../services/certbot');
-const { getTlsSource, installCustomCert, removeCustomCert, readManagedCert, getServiceDomain, setServiceDomain } = require('../services/tls');
+const { getTlsSource, installCustomCert, removeCustomCert, readManagedCert, getServiceDomain, getServiceCertId, setServiceDomain } = require('../services/tls');
 const scheduler = require('../services/scheduler');
+const { getEffectiveCloudflareToken, getEffectiveLetsencryptEmail } = require('../services/configHelpers');
+const { encrypt } = require('../services/encryption');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -16,14 +18,12 @@ router.use(requireAuth);
 // ---------------------------------------------------------------------------
 router.get('/', (_req, res) => {
   const db = getDb();
-  const cfRow = db.get("SELECT value FROM settings WHERE key = 'cloudflare_api_token'");
-  const dbToken = cfRow ? cfRow.value : '';
-  const envToken = config.cloudflare.apiToken;
 
-  const emailRow = db.get("SELECT value FROM settings WHERE key = 'letsencrypt_email'");
-  const dbEmail = emailRow ? emailRow.value : '';
-  const envEmail = config.letsencrypt.email;
-  const effectiveEmail = envEmail || dbEmail;
+  const effectiveToken = getEffectiveCloudflareToken();
+  const tokenSource = config.cloudflare.apiToken ? 'env' : effectiveToken ? 'database' : 'none';
+
+  const effectiveEmail = getEffectiveLetsencryptEmail();
+  const emailSource = config.letsencrypt.email ? 'env' : effectiveEmail ? 'database' : 'none';
 
   const certCount = db.get('SELECT COUNT(*) AS n FROM certificates');
   const activeCerts = db.get("SELECT COUNT(*) AS n FROM certificates WHERE status = 'active'");
@@ -31,11 +31,7 @@ router.get('/', (_req, res) => {
 
   // Identify the certificate ID being used for server TLS (if managed)
   const serviceDomain = getServiceDomain();
-  let serviceCertId = null;
-  if (serviceDomain) {
-    const row = db.get("SELECT id FROM certificates WHERE certbot_name = ?", [serviceDomain]);
-    if (row) serviceCertId = row.id;
-  }
+  const serviceCertId = getServiceCertId();
 
   res.json({
     server: {
@@ -46,16 +42,16 @@ router.get('/', (_req, res) => {
       port: config.port,
     },
     cloudflare: {
-      hasToken: !!(envToken || dbToken),
-      source: envToken ? 'env' : dbToken ? 'database' : 'none',
-      maskedToken: maskToken(envToken || dbToken),
+      hasToken: !!effectiveToken,
+      source: tokenSource,
+      maskedToken: maskToken(effectiveToken),
     },
     credentials: {
       source: config.admin.fromEnv ? 'env' : 'database',
     },
     email: {
       value: effectiveEmail,
-      source: envEmail ? 'env' : dbEmail ? 'database' : 'none',
+      source: emailSource,
     },
     tls: {
       source: getTlsSource(),
@@ -104,12 +100,7 @@ router.put('/cloudflare', async (req, res) => {
       return res.status(400).json({ error: `Invalid Cloudflare API token: ${validation.error}` });
     }
 
-    const existing = db.get("SELECT key FROM settings WHERE key = 'cloudflare_api_token'");
-    if (existing) {
-      db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'cloudflare_api_token'", [apiToken.trim()]);
-    } else {
-      db.run("INSERT INTO settings (key, value) VALUES ('cloudflare_api_token', ?)", [apiToken.trim()]);
-    }
+    db.upsertSetting('cloudflare_api_token', encrypt(apiToken.trim()));
     logger.info('Cloudflare API token saved to database (validated)');
     ensureCloudflareIni();
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", ['cf_token_updated', 'Token updated via UI (validated)']);
@@ -154,12 +145,7 @@ router.put('/email', (req, res) => {
     return res.status(400).json({ error: 'Invalid email address' });
   }
 
-  const existing = db.get("SELECT key FROM settings WHERE key = 'letsencrypt_email'");
-  if (existing) {
-    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'letsencrypt_email'", [trimmed]);
-  } else {
-    db.run("INSERT INTO settings (key, value) VALUES ('letsencrypt_email', ?)", [trimmed]);
-  }
+  db.upsertSetting('letsencrypt_email', trimmed);
   logger.info('Registration email saved to database', { email: trimmed });
   db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", ['email_updated', `Email set to ${trimmed}`]);
 
@@ -204,9 +190,19 @@ router.put('/tls', (req, res) => {
 
   // Use a managed cert (issued by this app)
   if (managedDomain) {
-    const managed = readManagedCert(managedDomain);
+    // Validate managedDomain against DB to prevent path traversal
+    if (typeof managedDomain !== 'string' || managedDomain.length > 253) {
+      return res.status(400).json({ error: 'Invalid managed domain' });
+    }
+    const db = getDb();
+    const certRow = db.get("SELECT certbot_name FROM certificates WHERE certbot_name = ? AND status = 'active'", [managedDomain]);
+    if (!certRow) {
+      return res.status(404).json({ error: `No active managed certificate found for "${managedDomain}".` });
+    }
+
+    const managed = readManagedCert(certRow.certbot_name);
     if (!managed) {
-      return res.status(404).json({ error: `No managed certificate found for "${managedDomain}". Make sure the cert was issued and is active.` });
+      return res.status(404).json({ error: `Certificate files not found on disk for "${managedDomain}".` });
     }
 
     const result = installCustomCert(managed.cert, managed.key);
@@ -330,32 +326,14 @@ router.put('/agents', (req, res) => {
   const db = getDb();
   const intervalSeconds = heartbeat_interval_minutes * 60;
 
-  // Upsert heartbeat interval
-  const existingInterval = db.get("SELECT key FROM settings WHERE key = 'agent_heartbeat_interval'");
-  if (existingInterval) {
-    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'agent_heartbeat_interval'", [String(intervalSeconds)]);
-  } else {
-    db.run("INSERT INTO settings (key, value) VALUES ('agent_heartbeat_interval', ?)", [String(intervalSeconds)]);
-  }
-
-  // Upsert offline threshold
-  const existingThreshold = db.get("SELECT key FROM settings WHERE key = 'agent_offline_threshold'");
-  if (existingThreshold) {
-    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'agent_offline_threshold'", [String(offline_threshold)]);
-  } else {
-    db.run("INSERT INTO settings (key, value) VALUES ('agent_offline_threshold', ?)", [String(offline_threshold)]);
-  }
+  db.upsertSetting('agent_heartbeat_interval', String(intervalSeconds));
+  db.upsertSetting('agent_offline_threshold', String(offline_threshold));
 
   // Increment global config version — agents will pick this up on next heartbeat
   const versionRow = db.get("SELECT value FROM settings WHERE key = 'agent_config_version'");
   const currentVersion = parseInt(versionRow?.value, 10) || 1;
   const newVersion = currentVersion + 1;
-  const existingVersion = db.get("SELECT key FROM settings WHERE key = 'agent_config_version'");
-  if (existingVersion) {
-    db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'agent_config_version'", [String(newVersion)]);
-  } else {
-    db.run("INSERT INTO settings (key, value) VALUES ('agent_config_version', ?)", [String(newVersion)]);
-  }
+  db.upsertSetting('agent_config_version', String(newVersion));
 
   logger.info('Agent monitoring settings updated', {
     heartbeat_interval: intervalSeconds,

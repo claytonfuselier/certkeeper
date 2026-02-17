@@ -189,18 +189,32 @@ function getServiceDomain() {
 }
 
 /**
+ * Get the certificate ID currently used for server TLS, or null.
+ */
+function getServiceCertId() {
+  const domain = getServiceDomain();
+  if (!domain) return null;
+  const db = getDb();
+  const row = db.get('SELECT id FROM certificates WHERE certbot_name = ?', [domain]);
+  return row ? row.id : null;
+}
+
+/**
+ * Check whether a given certificate ID is the one currently used for server TLS.
+ */
+function isServiceCert(certId) {
+  if (certId == null) return false;
+  return getServiceCertId() === certId;
+}
+
+/**
  * Store which managed domain is used for the service TLS cert.
  * Pass null to clear it (e.g. when reverting to self-signed or uploading custom).
  */
 function setServiceDomain(domain) {
   const db = getDb();
   if (domain) {
-    const existing = db.get('SELECT key FROM settings WHERE key = ?', [TLS_DOMAIN_KEY]);
-    if (existing) {
-      db.run('UPDATE settings SET value = ?, updated_at = datetime(\'now\') WHERE key = ?', [domain, TLS_DOMAIN_KEY]);
-    } else {
-      db.run('INSERT INTO settings (key, value) VALUES (?, ?)', [TLS_DOMAIN_KEY, domain]);
-    }
+    db.upsertSetting(TLS_DOMAIN_KEY, domain);
   } else {
     db.run('DELETE FROM settings WHERE key = ?', [TLS_DOMAIN_KEY]);
   }
@@ -251,6 +265,8 @@ module.exports = {
   getTlsSource,
   readManagedCert,
   getServiceDomain,
+  getServiceCertId,
+  isServiceCert,
   setServiceDomain,
   refreshServiceCert,
 };

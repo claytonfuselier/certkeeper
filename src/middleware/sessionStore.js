@@ -52,6 +52,19 @@ class SqliteSessionStore extends session.Store {
     }
   }
 
+  /** Refresh the expiry for an active session (called when resave is false). */
+  touch(sid, sess, callback) {
+    try {
+      const db = getDb();
+      const maxAge = sess.cookie && sess.cookie.maxAge ? sess.cookie.maxAge : 86400000;
+      const expired = new Date(Date.now() + maxAge).toISOString();
+      db.run('UPDATE sessions SET expired = ? WHERE sid = ?', [expired, sid]);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+
   /** Clean up expired sessions */
   clearExpired() {
     try {

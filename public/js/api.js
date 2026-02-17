@@ -5,12 +5,19 @@
 import { toast } from './dom.js';
 import { navigate } from './router.js';
 
+// CSRF token — set after login/auth check, sent on all state-changing requests
+let _csrfToken = null;
+
+/** Store the CSRF token received from the server. */
+export function setCsrfToken(token) { _csrfToken = token; }
+
 /**
  * Central fetch wrapper. Throws on non-2xx with the full response body
  * attached to the Error object. Redirects to /login on 401.
  */
 export async function api(method, url, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (_csrfToken) opts.headers['X-CSRF-Token'] = _csrfToken;
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));

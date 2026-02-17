@@ -512,28 +512,10 @@ function signCSR(csrPem, agentName, days) {
   return { certPem, fingerprint, expiresAt: notAfter };
 }
 
-/**
- * Compute the SHA-256 fingerprint of a PEM certificate.
- */
-function certFingerprint(certPem) {
-  const der = pemToDer(certPem, 'CERTIFICATE');
-  return crypto.createHash('sha256').update(der).digest('hex');
-}
-
-/**
- * Extract the expiry date from a PEM certificate.
- */
-function certExpiresAt(certPem) {
-  const x509 = new crypto.X509Certificate(certPem);
-  return new Date(x509.validTo);
-}
-
 module.exports = {
   ensureCA,
   getCACert,
   signCSR,
-  certFingerprint,
-  certExpiresAt,
   AGENT_CERT_DAYS,
   CA_CERT_PATH,
   CA_DIR,

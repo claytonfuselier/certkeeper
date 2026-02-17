@@ -21,21 +21,6 @@ window.addEventListener('unhandledrejection', (e) => {
   }
 });
 
-// ---------- Auth Check (used by router) ----------
-
-let _cachedAuthState = null;
-
-async function authCheck() {
-  if (_cachedAuthState) return _cachedAuthState;
-  _cachedAuthState = await checkAuth();
-  return _cachedAuthState;
-}
-
-/** Clear cached auth state (e.g. after login/logout). */
-export function clearAuthCache() {
-  _cachedAuthState = null;
-}
-
 // ---------- Route Registration ----------
 
 // Public routes (no auth required)
@@ -44,7 +29,7 @@ registerRoute('/login', 'login-screen', {
 }, { public: true });
 
 registerRoute('/setup', 'setup-screen', {
-  load: () => loadSetup({}, _cachedAuthState),
+  load: () => loadSetup(),
 }, { public: true });
 
 // Authenticated routes
@@ -63,11 +48,10 @@ registerRoute('/settings/:tab', 'page-settings', settings);
 
 async function init() {
   // Set auth check for the router
-  setAuthCheck(authCheck);
+  setAuthCheck(checkAuth);
 
   // Check auth state before initializing
   const authState = await checkAuth();
-  _cachedAuthState = authState;
 
   if (authState.authenticated) {
     setAuthenticated(true);
@@ -76,6 +60,7 @@ async function init() {
 
   // Initialize all modules (bind event listeners — once only)
   initAuth();
+  dashboard.init();
   certs.init();
   agents.init();
   notifications.init();

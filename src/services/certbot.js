@@ -4,6 +4,7 @@ const path = require('path');
 const config = require('../config');
 const logger = require('../logger');
 const { getDb } = require('../db');
+const { getEffectiveCloudflareToken, getEffectiveLetsencryptEmail } = require('./configHelpers');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -106,25 +107,6 @@ function classifyError(code, rawMsg) {
   };
 }
 
-/**
- * Build the base certbot args (paths, email, agree-tos, non-interactive).
- */
-/**
- * Resolve the registration email: env var wins, then DB fallback.
- */
-function getLetsencryptEmail() {
-  const envEmail = config.letsencrypt.email;
-  if (envEmail) return envEmail;
-
-  try {
-    const db = getDb();
-    const row = db.get("SELECT value FROM settings WHERE key = 'letsencrypt_email'");
-    return row ? row.value : '';
-  } catch {
-    return '';
-  }
-}
-
 function baseArgs() {
   const args = [
     '--non-interactive',
@@ -134,7 +116,7 @@ function baseArgs() {
     '--logs-dir', config.paths.certbotLogs,
   ];
 
-  const email = getLetsencryptEmail();
+  const email = getEffectiveLetsencryptEmail();
   if (email) {
     args.push('--email', email);
   } else {
@@ -149,26 +131,10 @@ function baseArgs() {
 }
 
 /**
- * Resolve the Cloudflare API token: env var wins, then DB fallback.
- */
-function getCloudflareToken() {
-  const envToken = config.cloudflare.apiToken;
-  if (envToken) return envToken;
-
-  try {
-    const db = getDb();
-    const row = db.get("SELECT value FROM settings WHERE key = 'cloudflare_api_token'");
-    return row ? row.value : '';
-  } catch {
-    return '';
-  }
-}
-
-/**
  * Ensure the Cloudflare credentials INI file exists.
  */
 function ensureCloudflareIni() {
-  const token = getCloudflareToken();
+  const token = getEffectiveCloudflareToken();
   if (!token) {
     throw new Error('Cloudflare API token is not configured — set it in Settings or via CLOUDFLARE_API_TOKEN env var');
   }
@@ -362,7 +328,7 @@ async function syncCertificates() {
     if (existing) {
       db.run(`
         UPDATE certificates SET domains = ?, status = ?, expires_at = ?, staging = ?, updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND status NOT IN ('issuing', 'renewing')
       `, [domains, status, expiresAt, cert.staging ? 1 : 0, existing.id]);
     } else {
       db.run(`
@@ -401,7 +367,6 @@ module.exports = {
   deleteCertificate,
   listCertbotCertificates,
   syncCertificates,
-  getCloudflareToken,
   ensureCloudflareIni,
   deleteCloudflareIni,
 };

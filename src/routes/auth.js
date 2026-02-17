@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { getDb } = require('../db');
 const config = require('../config');
@@ -16,7 +17,7 @@ router.post('/login', async (req, res) => {
     }
 
     const db = getDb();
-    const user = db.get('SELECT * FROM users WHERE username = ?', [username]);
+    const user = db.get('SELECT id, username, password FROM users WHERE username = ?', [username]);
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -27,11 +28,12 @@ router.post('/login', async (req, res) => {
     }
 
     req.session.user = { id: user.id, username: user.username };
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
 
     logger.info('User logged in', { username });
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", ['login', username]);
 
-    return res.json({ ok: true, user: { username: user.username } });
+    return res.json({ ok: true, user: { username: user.username }, csrfToken: req.session.csrfToken });
   } catch (err) {
     logger.error('Login error', { err });
     return res.status(500).json({ error: 'Internal server error' });
@@ -53,7 +55,11 @@ router.post('/logout', (req, res) => {
 // GET /api/auth/me
 router.get('/me', (req, res) => {
   if (req.session?.user) {
-    return res.json({ user: req.session.user });
+    // Ensure CSRF token exists (may be missing for pre-existing sessions)
+    if (!req.session.csrfToken) {
+      req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    }
+    return res.json({ user: req.session.user, csrfToken: req.session.csrfToken });
   }
 
   // Check if any user exists — if not, the frontend should show the setup screen
@@ -105,12 +111,7 @@ router.post('/setup', async (req, res) => {
 
     // Save registration email (already validated above)
     if (!config.letsencrypt.emailFromEnv) {
-      const existing = db.get("SELECT key FROM settings WHERE key = 'letsencrypt_email'");
-      if (existing) {
-        db.run("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'letsencrypt_email'", [email.trim()]);
-      } else {
-        db.run("INSERT INTO settings (key, value) VALUES ('letsencrypt_email', ?)", [email.trim()]);
-      }
+      db.upsertSetting('letsencrypt_email', email.trim());
       logger.info('Registration email saved during setup', { email: email.trim() });
     }
 
@@ -122,8 +123,9 @@ router.post('/setup', async (req, res) => {
       id: db.get('SELECT id FROM users WHERE username = ?', [username.trim()]).id,
       username: username.trim(),
     };
+    req.session.csrfToken = crypto.randomBytes(32).toString('hex');
 
-    return res.json({ ok: true, user: { username: username.trim() } });
+    return res.json({ ok: true, user: { username: username.trim() }, csrfToken: req.session.csrfToken });
   } catch (err) {
     logger.error('Setup error', { err });
     return res.status(500).json({ error: 'Internal server error' });
@@ -152,7 +154,7 @@ router.post('/password', async (req, res) => {
     }
 
     const db = getDb();
-    const user = db.get('SELECT * FROM users WHERE id = ?', [req.session.user.id]);
+    const user = db.get('SELECT id, username, password FROM users WHERE id = ?', [req.session.user.id]);
     const valid = await bcrypt.compare(currentPassword, user.password);
     if (!valid) {
       return res.status(401).json({ error: 'Current password is incorrect' });

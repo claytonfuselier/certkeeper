@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
-const { getDb } = require('../db');
+const { getDb, toSqliteDatetime, parsePendingActions, parseIntId } = require('../db');
 const logger = require('../logger');
 const { requireAgentAuth, requireEnrollmentAuth } = require('../middleware/agentAuth');
 const { signCSR, getCACert, AGENT_CERT_DAYS } = require('../services/ca');
@@ -38,7 +38,7 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
     const db = getDb();
 
     // Check for fingerprint collision (astronomically unlikely but enforce uniqueness)
-    const expiresAtStr = expiresAt.toISOString().replace('T', ' ').replace('Z', '');
+    const expiresAtStr = toSqliteDatetime(expiresAt);
     const fpCollision = db.get(
       'SELECT id, name FROM agents WHERE (cert_fingerprint = ? OR prev_cert_fingerprint = ?) AND id != ?',
       [fingerprint, fingerprint, agent.id],
@@ -54,10 +54,11 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
     // Read heartbeat interval for initial next_contact_at
     const intervalRow = db.get("SELECT value FROM settings WHERE key = 'agent_heartbeat_interval'");
     const intervalSeconds = parseInt(intervalRow?.value, 10) || 180;
-    const nextContactAt = new Date(Date.now() + intervalSeconds * 1000)
-      .toISOString().replace('T', ' ').replace('Z', '');
+    const nextContactAt = toSqliteDatetime(new Date(Date.now() + intervalSeconds * 1000));
 
-    // Store the cert fingerprint and expiry, burn the enrollment token
+    // Store the cert fingerprint and expiry, burn the enrollment token,
+    // and record initial contact info — all in a single UPDATE.
+    const ip = req.ip || req.socket?.remoteAddress || '';
     db.run(
       `UPDATE agents SET
         cert_fingerprint = ?,
@@ -66,15 +67,11 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
         enrollment_expires_at = NULL,
         status = 'online',
         next_contact_at = ?,
+        last_contact_at = datetime('now'),
+        last_contact_ip = ?,
         updated_at = datetime('now')
       WHERE id = ?`,
-      [fingerprint, expiresAtStr, nextContactAt, agent.id],
-    );
-
-    const ip = req.ip || req.connection?.remoteAddress || '';
-    db.run(
-      "UPDATE agents SET last_contact_at = datetime('now'), last_contact_ip = ?, updated_at = datetime('now') WHERE id = ?",
-      [ip, agent.id],
+      [fingerprint, expiresAtStr, nextContactAt, ip, agent.id],
     );
 
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
@@ -178,7 +175,6 @@ router.get('/deployments', (req, res) => {
       certificate_id: d.certificate_id,
       domains: d.domains ? d.domains.split(' ') : [],
       cert_status: d.cert_status,
-      certbot_name: d.certbot_name,
       expires_at: d.expires_at,
       issued_at: d.issued_at,
       last_renewed_at: d.last_renewed_at,
@@ -197,8 +193,9 @@ router.get('/deployments', (req, res) => {
 // The agent fetches this when it detects content_hash has changed.
 // ---------------------------------------------------------------------------
 router.get('/deployments/:id/bundle', (req, res) => {
+  const depId = parseIntId(req.params.id);
+  if (!depId) return res.status(400).json({ error: 'Invalid deployment ID' });
   const db = getDb();
-  const depId = parseInt(req.params.id, 10);
   const agentId = req.agent.id;
 
   const dep = db.get(
@@ -211,6 +208,10 @@ router.get('/deployments/:id/bundle', (req, res) => {
 
   if (!dep.certbot_name) {
     return res.status(400).json({ error: 'Certificate has no certbot name — not yet issued' });
+  }
+
+  if (!dep.enabled) {
+    return res.status(403).json({ error: 'Deployment is disabled' });
   }
 
   if (dep.cert_status !== 'active') {
@@ -293,7 +294,7 @@ router.post('/renew-cert', (req, res) => {
     const caCert = getCACert();
     const db = getDb();
 
-    const expiresAtStr = expiresAt.toISOString().replace('T', ' ').replace('Z', '');
+    const expiresAtStr = toSqliteDatetime(expiresAt);
 
     // Check for fingerprint collision before updating
     const fpCollision = db.get(
@@ -372,8 +373,7 @@ router.post('/heartbeat', (req, res) => {
   const configVersion = parseInt(globalVersion?.value, 10) || 1;
 
   // Calculate next expected contact time
-  const nextContactAt = new Date(Date.now() + intervalSeconds * 1000)
-    .toISOString().replace('T', ' ').replace('Z', '');
+  const nextContactAt = toSqliteDatetime(new Date(Date.now() + intervalSeconds * 1000));
 
   // Detect state transition: offline → online
   const wasOffline = agent.status === 'offline';
@@ -387,26 +387,21 @@ router.post('/heartbeat', (req, res) => {
   }
 
   // Read and clear pending actions
-  let actions = [];
-  if (agent.pending_actions) {
-    try {
-      actions = JSON.parse(agent.pending_actions);
-      if (!Array.isArray(actions)) actions = [];
-    } catch {
-      actions = [];
-    }
-  }
+  const actions = parsePendingActions(agent);
 
-  // Update agent state
+  // Update agent state + last_contact info (middleware skips this for heartbeats)
+  const ip = req.ip || req.socket?.remoteAddress || '';
   db.run(
     `UPDATE agents SET
       status = 'online',
       next_contact_at = ?,
       config_version = ?,
       pending_actions = NULL,
+      last_contact_at = datetime('now'),
+      last_contact_ip = ?,
       updated_at = datetime('now')
     WHERE id = ?`,
-    [nextContactAt, agentConfigVersion, agent.id],
+    [nextContactAt, agentConfigVersion, ip, agent.id],
   );
 
   const deploymentCount = db.get(
