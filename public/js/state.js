@@ -33,12 +33,16 @@ export function setServiceCertId(id) { _serviceCertId = id; }
 
 // ---------- Refresh from API ----------
 
-/** Refresh TLS / agent global state from settings API (lightweight). */
+/** Refresh TLS / agent / cloudflare global state from settings API (lightweight). */
 export async function refreshTlsState() {
   try {
     const data = await api('GET', '/api/settings');
     _tlsSource = data.tls?.source || 'self-signed';
     _agentCount = data.agents?.count || 0;
     _serviceCertId = data.tls?.serviceCertId || null;
+    if (data.cloudflare) {
+      _hasCloudflareToken = !!data.cloudflare.hasToken;
+      _cloudflareSource = data.cloudflare.source || 'none';
+    }
   } catch { /* best effort — globals retain previous values */ }
 }

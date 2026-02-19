@@ -158,6 +158,35 @@ a:hover { text-decoration: underline; }
 .table th { color: var(--text-muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .5px; }
 .table tbody tr:hover { background: rgba(108,99,255,.04); }
 
+/* ---- Certificate domain tags ---- */
+.cert-domain {
+  display: inline-block;
+  background: var(--bg-input);
+  color: var(--text);
+  padding: .15rem .45rem;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: .85em;
+  margin: .1rem .15rem .1rem 0;
+}
+
+/* ---- Certificate action bar ---- */
+.cert-action-bar {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .5rem .75rem;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.cert-selected-count {
+  font-size: .85rem;
+  color: var(--text-muted);
+  margin-right: .5rem;
+  min-width: 6rem;
+}
+
 /* ---- Certificate error detail rows ---- */
 .cert-error-row { background: rgba(239,68,68,.03); }
 .cert-error-detail { display: none; }

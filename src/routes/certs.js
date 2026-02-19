@@ -36,7 +36,7 @@ function validateDomains(domains) {
 router.get('/', (req, res) => {
   const db = getDb();
   const certs = db.all('SELECT * FROM certificates ORDER BY created_at DESC');
-  const result = certs.map((c) => ({ ...c, domains: c.domains.split(' ') }));
+  const result = certs.map((c) => ({ ...c, domains: c.domains.split(' ').filter(Boolean) }));
   res.json(result);
 });
 
@@ -49,7 +49,7 @@ router.get('/:id', (req, res) => {
   const db = getDb();
   const cert = db.get('SELECT * FROM certificates WHERE id = ?', [id]);
   if (!cert) return res.status(404).json({ error: 'Not found' });
-  cert.domains = cert.domains.split(' ');
+  cert.domains = cert.domains.split(' ').filter(Boolean);
   res.json(cert);
 });
 
@@ -115,7 +115,7 @@ router.post('/', async (req, res) => {
 
     // Return immediately — certbot runs in the background
     const cert = db.get('SELECT * FROM certificates WHERE id = ?', [lastInsertRowid]);
-    cert.domains = cert.domains.split(' ');
+    cert.domains = cert.domains.split(' ').filter(Boolean);
     res.status(202).json(cert);
 
     // Fire-and-forget: run certbot in the background
@@ -180,7 +180,7 @@ router.post('/:id/renew', async (req, res) => {
 
     // Return immediately
     const updated = db.get('SELECT * FROM certificates WHERE id = ?', [cert.id]);
-    updated.domains = updated.domains.split(' ');
+    updated.domains = updated.domains.split(' ').filter(Boolean);
     res.status(202).json(updated);
 
     // Fire-and-forget: run certbot in the background
@@ -291,10 +291,146 @@ router.patch('/:id', (req, res) => {
     }
 
     const updated = db.get('SELECT * FROM certificates WHERE id = ?', [cert.id]);
-    updated.domains = updated.domains.split(' ');
+    updated.domains = updated.domains.split(' ').filter(Boolean);
     res.json(updated);
   } catch (err) {
     logger.error('Certificate update error', { err });
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/certs/bulk — perform bulk actions on multiple certificates
+// Body: { ids: [1,2,3], action: 'renew'|'revoke'|'remove'|'auto_renew_on'|'auto_renew_off' }
+// ---------------------------------------------------------------------------
+router.post('/bulk', async (req, res) => {
+  try {
+    const { ids, action } = req.body || {};
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'No certificates selected.' });
+    }
+
+    const validActions = ['renew', 'revoke', 'remove', 'auto_renew_on', 'auto_renew_off'];
+    if (!validActions.includes(action)) {
+      return res.status(400).json({ error: `Invalid action. Must be one of: ${validActions.join(', ')}` });
+    }
+
+    // Validate all IDs are positive integers
+    const parsedIds = ids.map((id) => parseIntId(id)).filter(Boolean);
+    if (parsedIds.length === 0) {
+      return res.status(400).json({ error: 'No valid certificate IDs provided.' });
+    }
+
+    const db = getDb();
+    const results = { succeeded: 0, failed: 0, errors: [] };
+
+    for (const id of parsedIds) {
+      const cert = db.get('SELECT * FROM certificates WHERE id = ?', [id]);
+      if (!cert) {
+        results.failed++;
+        results.errors.push({ id, error: 'Not found' });
+        continue;
+      }
+
+      try {
+        if (action === 'auto_renew_on' || action === 'auto_renew_off') {
+          const val = action === 'auto_renew_on' ? 1 : 0;
+          db.run("UPDATE certificates SET auto_renew = ?, updated_at = datetime('now') WHERE id = ?", [val, id]);
+          results.succeeded++;
+
+        } else if (action === 'renew') {
+          if (!cert.certbot_name) {
+            results.failed++;
+            results.errors.push({ id, error: 'No certbot name' });
+            continue;
+          }
+          if (cert.status === 'issuing' || cert.status === 'renewing') {
+            results.failed++;
+            results.errors.push({ id, error: 'Already in progress' });
+            continue;
+          }
+          if (cert.status !== 'active' && cert.status !== 'expired') {
+            results.failed++;
+            results.errors.push({ id, error: `Cannot renew cert with status "${cert.status}"` });
+            continue;
+          }
+          db.run("UPDATE certificates SET status = 'renewing', error_message = NULL, updated_at = datetime('now') WHERE id = ?", [id]);
+          db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+            'cert_renew', JSON.stringify({ id, certbotName: cert.certbot_name, bulk: true }),
+          ]);
+          // Fire-and-forget background renewal
+          certbot.renewCertificate(cert.certbot_name).then(async (result) => {
+            if (result.success) {
+              await certbot.syncCertificates();
+              refreshServiceCert();
+            } else {
+              const errPayload = JSON.stringify(result.error || { title: 'Unknown error', detail: result.message, link: '' });
+              db.run("UPDATE certificates SET status = 'error', error_message = ?, updated_at = datetime('now') WHERE id = ?", [errPayload, id]);
+            }
+          }).catch((err) => {
+            const errPayload = JSON.stringify({ title: 'Unexpected error', detail: err.message, link: '' });
+            db.run("UPDATE certificates SET status = 'error', error_message = ?, updated_at = datetime('now') WHERE id = ?", [errPayload, id]);
+          });
+          results.succeeded++;
+
+        } else if (action === 'revoke') {
+          if (isServiceCert(id)) {
+            results.failed++;
+            results.errors.push({ id, error: 'Certificate is used for server TLS' });
+            continue;
+          }
+          if (!cert.certbot_name || ['issuing', 'renewing', 'revoked'].includes(cert.status)) {
+            results.failed++;
+            results.errors.push({ id, error: `Cannot revoke cert with status "${cert.status}"` });
+            continue;
+          }
+          const revokeResult = await certbot.revokeCertificate(cert.certbot_name);
+          if (!revokeResult.success) {
+            results.failed++;
+            results.errors.push({ id, error: revokeResult.message });
+            continue;
+          }
+          db.run("UPDATE certificates SET status = 'revoked', error_message = NULL, updated_at = datetime('now') WHERE id = ?", [id]);
+          db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+            'cert_revoke', JSON.stringify({ id, domains: cert.domains, bulk: true }),
+          ]);
+          results.succeeded++;
+
+        } else if (action === 'remove') {
+          if (isServiceCert(id)) {
+            results.failed++;
+            results.errors.push({ id, error: 'Certificate is used for server TLS' });
+            continue;
+          }
+          if (['issuing', 'renewing'].includes(cert.status)) {
+            results.failed++;
+            results.errors.push({ id, error: `Cannot remove cert with status "${cert.status}"` });
+            continue;
+          }
+          if (cert.certbot_name) {
+            const delResult = await certbot.deleteCertificate(cert.certbot_name);
+            if (!delResult.success) {
+              logger.warn('Failed to delete cert from disk during bulk remove', { id, message: delResult.message });
+            }
+          }
+          db.run('DELETE FROM certificates WHERE id = ?', [id]);
+          db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+            'cert_remove', JSON.stringify({ id, domains: cert.domains, bulk: true }),
+          ]);
+          results.succeeded++;
+        }
+      } catch (opErr) {
+        results.failed++;
+        results.errors.push({ id, error: opErr.message });
+      }
+    }
+
+    logger.info('Bulk cert action completed', { action, total: parsedIds.length, succeeded: results.succeeded, failed: results.failed });
+
+    res.json(results);
+  } catch (err) {
+    logger.error('Bulk cert action error', { err });
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -307,7 +443,7 @@ router.post('/sync', async (_req, res) => {
     await certbot.syncCertificates();
     const db = getDb();
     const certs = db.all('SELECT * FROM certificates ORDER BY created_at DESC');
-    const result = certs.map((c) => ({ ...c, domains: c.domains.split(' ') }));
+    const result = certs.map((c) => ({ ...c, domains: c.domains.split(' ').filter(Boolean) }));
     res.json(result);
   } catch (err) {
     logger.error('Sync error', { err });

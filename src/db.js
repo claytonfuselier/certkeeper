@@ -256,7 +256,7 @@ async function initDatabase() {
   _db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-      name                    TEXT    NOT NULL,
+      name                    TEXT    NOT NULL UNIQUE,
       enrollment_token_hash   TEXT,
       enrollment_expires_at   TEXT,
       cert_fingerprint        TEXT    UNIQUE,
@@ -361,6 +361,19 @@ async function initDatabase() {
     }
   } catch (migErr) {
     logger.error('Deployments unique index migration failed', { err: migErr.message });
+  }
+
+  // Add unique constraint on agents.name if missing
+  try {
+    const nameIdxExists = _db._db.exec(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_agents_name_unique'"
+    );
+    if (nameIdxExists.length === 0 || nameIdxExists[0].values.length === 0) {
+      _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_unique ON agents(name)');
+      logger.info('Added unique index on agents(name)');
+    }
+  } catch (migErr) {
+    logger.error('Agent name unique index migration failed', { err: migErr.message });
   }
 
   // Seed default agent monitoring settings if not present

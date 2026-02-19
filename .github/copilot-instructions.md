@@ -101,6 +101,7 @@ public/
 - **Settings page** uses a tab layout with 6 tabs: Status, Let's Encrypt, Cloudflare API, TLS, Agents, Change Password. Tabs use CSS `.settings-pane.active` for show/hide.
 - **Notifications** is a separate page at `/notifications` with 7 channel sub-tabs, deep-linkable via `/notifications/:channel`.
 - **Toast notifications** via `toast(msg, type)` from `dom.js`.
+- **Confirm modals** via `confirmModal(message, opts)` from `dom.js`. Returns a Promise resolving to `true`/`false`. Supports `title`, `okLabel`, and `danger` (red button) options. No native `confirm()` or `alert()` calls — all confirmations use themed overlay modals.
 - **CSS uses custom properties** (dark theme): `--bg`, `--text`, `--primary`, `--border`, etc.
 
 ### Database Schema (key tables)
@@ -131,6 +132,15 @@ public/
 5. **Revoke:** `DELETE /api/certs/:id?action=revoke` → certbot revoke, keeps row as `revoked`.
 6. **Remove:** `DELETE /api/certs/:id?action=remove` → deletes row from DB + cert files from disk, no certbot revoke.
 7. **Default delete:** `DELETE /api/certs/:id` (no action) → certbot revoke, then remove from DB.
+8. **Bulk actions:** `POST /api/certs/bulk` with `{ ids: [...], action }` — supports `renew`, `revoke`, `remove`, `auto_renew_on`, `auto_renew_off`. Validates non-empty `ids` array. Returns `{ succeeded, failed, errors }`.
+
+### Certificate List UI
+
+- The certificate list uses **checkboxes** for row selection with a **select-all** checkbox in the header.
+- An **action bar** above the table shows the selected count and bulk action buttons (Renew, Auto-Renew On/Off, Revoke, Remove).
+- All action buttons are **disabled** when no certificates are selected.
+- Per-row actions are not displayed; all operations go through the bulk action bar (works for single or multi-select).
+- The auto-renew toggle remains inline per-row for quick single-cert toggling.
 
 ### Renewal Schedule
 

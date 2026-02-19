@@ -64,13 +64,19 @@ async function loadSettings() {
     $('#st-port').textContent = srv.port || '—';
 
     const tlsSource = data.tls?.source || 'self-signed';
+    const tlsServiceDomain = data.tls?.serviceDomain || null;
+    _currentServiceDomain = tlsServiceDomain;
     setTlsSource(tlsSource);
     setAgentCount(data.agents?.count || 0);
     setServiceCertId(data.tls?.serviceCertId || null);
 
-    $('#st-tls').innerHTML = tlsSource === 'custom'
-        ? '<span class="badge badge-active">Custom / Managed</span>'
-        : '<span class="badge badge-pending">Self-signed</span>';
+    if (tlsSource === 'custom' && tlsServiceDomain) {
+      $('#st-tls').innerHTML = '<span class="badge badge-active">Managed</span>';
+    } else if (tlsSource === 'custom') {
+      $('#st-tls').innerHTML = '<span class="badge badge-active">Custom</span>';
+    } else {
+      $('#st-tls').innerHTML = '<span class="badge badge-pending">Self-signed</span>';
+    }
 
     $('#st-staging').innerHTML = data.staging
       ? '<span class="badge badge-pending">Yes</span>'
@@ -184,13 +190,21 @@ async function loadSettings() {
 
     // ---- TLS pane ----
     const tlsStatusEl = $('#tls-status');
-    if (tlsSource === 'custom') {
-      tlsStatusEl.innerHTML = '<span class="badge badge-active">Custom</span> <span style="color:var(--text-muted);font-size:.85rem">Using a custom or managed certificate</span>';
+    if (tlsSource === 'custom' && tlsServiceDomain) {
+      tlsStatusEl.innerHTML = '<span class="badge badge-active">Managed</span> <span style="color:var(--text-muted);font-size:.85rem">Using a managed Let\'s Encrypt certificate</span>';
+    } else if (tlsSource === 'custom') {
+      tlsStatusEl.innerHTML = '<span class="badge badge-active">Custom</span> <span style="color:var(--text-muted);font-size:.85rem">Using a custom certificate</span>';
     } else {
       tlsStatusEl.innerHTML = '<span class="badge badge-pending">Self-signed</span> <span style="color:var(--text-muted);font-size:.85rem">Auto-generated certificate (browser warning expected)</span>';
     }
     const tlsModeSelect = $('#tls-mode');
-    tlsModeSelect.value = tlsSource === 'custom' ? 'custom' : 'self-signed';
+    if (tlsSource === 'custom' && tlsServiceDomain) {
+      tlsModeSelect.value = 'managed';
+    } else if (tlsSource === 'custom') {
+      tlsModeSelect.value = 'custom';
+    } else {
+      tlsModeSelect.value = 'self-signed';
+    }
 
     // Disable switching to self-signed when agents exist
     const selfSignedOpt = tlsModeSelect.querySelector('option[value="self-signed"]');
@@ -388,7 +402,7 @@ function updateTlsSections() {
   if (mode === 'managed') {
     show(managedSection);
     hide(customSection);
-    loadManagedCerts();
+    loadManagedCerts(_currentServiceDomain);
   } else if (mode === 'custom') {
     hide(managedSection);
     show(customSection);
@@ -398,7 +412,10 @@ function updateTlsSections() {
   }
 }
 
-async function loadManagedCerts() {
+// Track the current service domain so managed cert dropdown can pre-select it
+let _currentServiceDomain = null;
+
+async function loadManagedCerts(preselect) {
   const select = $('#tls-managed-domain');
   try {
     const certs = await api('GET', '/api/settings/tls/managed');
@@ -416,6 +433,10 @@ async function loadManagedCerts() {
       opt.value = cert.domains[0];
       opt.textContent = cert.domains.join(', ');
       select.appendChild(opt);
+    }
+    // Pre-select the currently active managed domain
+    if (preselect && select.querySelector(`option[value="${preselect}"]`)) {
+      select.value = preselect;
     }
   } catch {
     select.innerHTML = '<option value="" disabled>Failed to load certificates</option>';

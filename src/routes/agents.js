@@ -148,6 +148,12 @@ router.post('/', (req, res) => {
 
   const db = getDb();
 
+  // Check for duplicate name
+  const existing = db.get('SELECT id FROM agents WHERE name = ?', [name.trim()]);
+  if (existing) {
+    return res.status(409).json({ error: `An agent named "${name.trim()}" already exists.` });
+  }
+
   // Generate enrollment token: cke_<64 hex chars> (valid 1 hour)
   const rawSecret = crypto.randomBytes(32).toString('hex');
   const enrollToken = `cke_${rawSecret}`;
@@ -186,6 +192,11 @@ router.patch('/:id', (req, res) => {
   const { name, enabled } = req.body || {};
 
   if (typeof name === 'string' && name.trim().length > 0) {
+    // Check for duplicate name (excluding this agent)
+    const duplicate = db.get('SELECT id FROM agents WHERE name = ? AND id != ?', [name.trim(), agent.id]);
+    if (duplicate) {
+      return res.status(409).json({ error: `An agent named "${name.trim()}" already exists.` });
+    }
     db.run("UPDATE agents SET name = ?, updated_at = datetime('now') WHERE id = ?", [name.trim(), agent.id]);
   }
   if (typeof enabled === 'boolean') {

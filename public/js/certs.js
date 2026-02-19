@@ -2,7 +2,7 @@
    CertKeeper — Certificates Page
    ============================================= */
 
-import { $, $$, show, hide, toast, formatDate, statusBadge, escapeHtml, parseErrorMessage } from './dom.js';
+import { $, $$, show, hide, toast, formatDate, formatDateTime, statusBadge, escapeHtml, parseErrorMessage, confirmModal } from './dom.js';
 import { api } from './api.js';
 import { navigate, currentPage } from './router.js';
 import { refreshTlsState, serviceCertId, hasCloudflareToken } from './state.js';
@@ -32,9 +32,12 @@ function startPolling() {
 export function init() {
   initNewCertForm();
   initSyncButton();
+  initBulkActions();
+  initSelectAll();
 }
 
-export function load() {
+export async function load() {
+  await refreshTlsState();
   updateDns01State();
   loadCertificates();
 }
@@ -48,7 +51,6 @@ export function leave() {
 
 async function loadCertificates() {
   try {
-    await refreshTlsState();
     const certs = await api('GET', '/api/certs');
     const tbody = $('#certs-table tbody');
     const empty = $('#certs-empty');
@@ -57,6 +59,7 @@ async function loadCertificates() {
 
     if (certs.length === 0) {
       show(empty);
+      hide($('#cert-action-bar'));
       stopPolling();
       return;
     }
@@ -70,11 +73,6 @@ async function loadCertificates() {
       if (inProgress) hasInProgress = true;
 
       const isServiceCert = _serviceCertId !== null && cert.id === _serviceCertId;
-      const canRenew = cert.status === 'active' || cert.status === 'expired';
-      const canRetry = cert.status === 'error';
-      const canRevoke = cert.certbot_name && !['issuing', 'renewing', 'revoked'].includes(cert.status);
-      const canRemove = !['issuing', 'renewing'].includes(cert.status);
-      const isRevoked = cert.status === 'revoked';
       const hasError = cert.status === 'error' && cert.error_message;
 
       // Service cert indicator
@@ -83,23 +81,15 @@ async function loadCertificates() {
       const tr = document.createElement('tr');
       if (hasError) tr.classList.add('cert-error-row');
       tr.innerHTML = `
-        <td>${cert.domains.map((d) => `<code>${escapeHtml(d)}</code>`).join(' ')}${serviceBadge}</td>
+        <td><input type="checkbox" class="cert-select" data-id="${cert.id}" ${inProgress ? 'disabled' : ''}></td>
+        <td>${cert.domains.filter(Boolean).map((d) => `<span class="cert-domain">${escapeHtml(d)}</span>`).join(' ') || '<span class="text-muted">No domains</span>'}${serviceBadge}</td>
         <td>${statusBadge(cert.status, cert.staging)}${inProgress ? ' <span class="spinner"></span>' : ''}${hasError ? ' <button class="btn-error-toggle" title="Show error details">ⓘ</button>' : ''}</td>
-        <td>${formatDate(cert.expires_at)}</td>
+        <td>${formatDateTime(cert.expires_at)}</td>
         <td>
           <label class="toggle">
             <input type="checkbox" data-id="${cert.id}" class="auto-renew-toggle" ${cert.auto_renew ? 'checked' : ''} ${inProgress ? 'disabled' : ''}>
             <span class="toggle-slider"></span>
           </label>
-        </td>
-        <td>
-          <button class="btn btn-sm btn-secondary renew-btn" data-id="${cert.id}" ${canRenew ? '' : 'disabled'}>Renew</button>
-          ${canRetry ? `<button class="btn btn-sm btn-secondary retry-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}">Retry</button>` : ''}
-          ${isRevoked ? `<button class="btn btn-sm btn-secondary reissue-btn" data-id="${cert.id}" data-domains="${encodeURIComponent(JSON.stringify(cert.domains))}">Reissue</button>` : ''}
-          ${canRevoke && !isServiceCert ? `<button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}">Revoke</button>` : ''}
-          ${canRevoke && isServiceCert ? `<button class="btn btn-sm btn-danger revoke-btn" data-id="${cert.id}" disabled title="Switch TLS to a different certificate before revoking">Revoke</button>` : ''}
-          ${canRemove && !isServiceCert ? `<button class="btn btn-sm ${isRevoked || !canRevoke ? 'btn-danger' : 'btn-muted'} remove-btn" data-id="${cert.id}" title="Remove from tracking${canRevoke ? ' without revoking' : ''}">Remove</button>` : ''}
-          ${canRemove && isServiceCert ? `<button class="btn btn-sm ${isRevoked || !canRevoke ? 'btn-danger' : 'btn-muted'} remove-btn" data-id="${cert.id}" disabled title="Switch TLS to a different certificate before removing">Remove</button>` : ''}
         </td>
       `;
       tbody.appendChild(tr);
@@ -129,7 +119,7 @@ async function loadCertificates() {
       }
     }
 
-    // Event listeners
+    // Event listeners — auto-renew inline toggle
     $$('.auto-renew-toggle', tbody).forEach((input) => {
       input.addEventListener('change', async (e) => {
         try {
@@ -139,68 +129,14 @@ async function loadCertificates() {
       });
     });
 
-    $$('.renew-btn', tbody).forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('Force renew this certificate?')) return;
-        btn.disabled = true;
-        try {
-          await api('POST', `/api/certs/${btn.dataset.id}/renew`);
-          toast('Renewal started — processing in background…', 'info');
-          loadCertificates();
-        } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
-      });
+    // Checkbox selection listeners
+    $$('.cert-select', tbody).forEach((cb) => {
+      cb.addEventListener('change', updateSelectionState);
     });
 
-    $$('.revoke-btn', tbody).forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('Revoke this certificate? It will be marked as revoked but kept in the list.')) return;
-        btn.disabled = true;
-        try {
-          await api('DELETE', `/api/certs/${btn.dataset.id}?action=revoke`);
-          toast('Certificate revoked', 'success');
-          loadCertificates();
-        } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
-      });
-    });
-
-    $$('.retry-btn', tbody).forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('Retry issuing this certificate?')) return;
-        btn.disabled = true;
-        try {
-          const domains = JSON.parse(decodeURIComponent(btn.dataset.domains));
-          await api('DELETE', `/api/certs/${btn.dataset.id}?action=remove`);
-          await api('POST', '/api/certs', { domains });
-          toast('Retry started — processing in background…', 'info');
-          loadCertificates();
-        } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
-      });
-    });
-
-    $$('.reissue-btn', tbody).forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('Reissue a new certificate for these domains?')) return;
-        btn.disabled = true;
-        try {
-          const domains = JSON.parse(decodeURIComponent(btn.dataset.domains));
-          await api('POST', '/api/certs', { domains, overrideRevoked: true });
-          toast('Reissue started — processing in background…', 'info');
-          loadCertificates();
-        } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
-      });
-    });
-
-    $$('.remove-btn', tbody).forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('Remove this certificate from tracking? The certificate will not be revoked.')) return;
-        btn.disabled = true;
-        try {
-          await api('DELETE', `/api/certs/${btn.dataset.id}?action=remove`);
-          toast('Certificate removed from tracking', 'success');
-          loadCertificates();
-        } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
-      });
-    });
+    // Reset select-all checkbox
+    $('#cert-select-all').checked = false;
+    updateSelectionState();
 
     // Auto-poll while any cert is in progress
     if (hasInProgress) {
@@ -212,6 +148,83 @@ async function loadCertificates() {
     toast(err.message, 'error');
     stopPolling();
   }
+}
+
+// ---------- Selection & Bulk Actions ----------
+
+function getSelectedIds() {
+  return $$('.cert-select:checked').map((cb) => parseInt(cb.dataset.id, 10));
+}
+
+function updateSelectionState() {
+  const selected = getSelectedIds();
+  const count = selected.length;
+  const actionBar = $('#cert-action-bar');
+  const countEl = $('#cert-selected-count');
+
+  if (count > 0) {
+    show(actionBar);
+    countEl.textContent = `${count} selected`;
+    $('#bulk-renew-btn').disabled = false;
+    $('#bulk-revoke-btn').disabled = false;
+    $('#bulk-remove-btn').disabled = false;
+  } else {
+    show(actionBar);
+    countEl.textContent = '0 selected';
+    $('#bulk-renew-btn').disabled = true;
+    $('#bulk-revoke-btn').disabled = true;
+    $('#bulk-remove-btn').disabled = true;
+  }
+
+  // Update select-all checkbox state
+  const allCheckboxes = $$('.cert-select:not(:disabled)');
+  const allChecked = allCheckboxes.length > 0 && allCheckboxes.every((cb) => cb.checked);
+  const someChecked = allCheckboxes.some((cb) => cb.checked);
+  const selectAll = $('#cert-select-all');
+  selectAll.checked = allChecked;
+  selectAll.indeterminate = someChecked && !allChecked;
+}
+
+function initSelectAll() {
+  $('#cert-select-all').addEventListener('change', (e) => {
+    const checked = e.target.checked;
+    $$('.cert-select:not(:disabled)').forEach((cb) => { cb.checked = checked; });
+    updateSelectionState();
+  });
+}
+
+async function executeBulkAction(action, confirmMsg) {
+  const ids = getSelectedIds();
+  if (ids.length === 0) {
+    toast('No certificates selected', 'error');
+    return;
+  }
+  if (!(await confirmModal(confirmMsg, { title: 'Bulk Action', okLabel: action === 'remove' || action === 'revoke' ? action.charAt(0).toUpperCase() + action.slice(1) : 'Confirm', danger: action === 'remove' || action === 'revoke' }))) return;
+
+  try {
+    const result = await api('POST', '/api/certs/bulk', { ids, action });
+    if (result.succeeded > 0) {
+      toast(`${result.succeeded} certificate${result.succeeded !== 1 ? 's' : ''} updated`, 'success');
+    }
+    if (result.failed > 0) {
+      toast(`${result.failed} failed: ${result.errors.map((e) => e.error).join(', ')}`, 'error');
+    }
+    loadCertificates();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function initBulkActions() {
+  $('#bulk-renew-btn').addEventListener('click', () => {
+    executeBulkAction('renew', `Renew ${getSelectedIds().length} selected certificate(s)?`);
+  });
+  $('#bulk-revoke-btn').addEventListener('click', () => {
+    executeBulkAction('revoke', `Revoke ${getSelectedIds().length} selected certificate(s)? They will be marked as revoked but kept in the list.`);
+  });
+  $('#bulk-remove-btn').addEventListener('click', () => {
+    executeBulkAction('remove', `Remove ${getSelectedIds().length} selected certificate(s) from tracking? They will not be revoked.`);
+  });
 }
 
 // ---------- New Certificate Form ----------
@@ -289,7 +302,7 @@ function initNewCertForm() {
     } catch (err) {
       // If a revoked cert exists, offer to override
       if (err.revoked) {
-        if (confirm('A revoked certificate exists for these domains. Replace it with a new one?')) {
+        if (await confirmModal('A revoked certificate exists for these domains. Replace it with a new one?', { title: 'Certificate Exists', okLabel: 'Replace' })) {
           try {
             await api('POST', '/api/certs', { domains, overrideRevoked: true });
             form.reset();
@@ -315,7 +328,8 @@ function initNewCertForm() {
 
 // ---------- New Cert Page Load ----------
 
-export function loadNewCert() {
+export async function loadNewCert() {
+  await refreshTlsState();
   updateDns01State();
 }
 

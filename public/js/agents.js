@@ -2,7 +2,7 @@
    CertKeeper — Agents Page
    ============================================= */
 
-import { $, $$, show, hide, toast, formatDate, statusBadge, escapeHtml } from './dom.js';
+import { $, $$, show, hide, toast, formatDate, formatDateTime, statusBadge, escapeHtml, confirmModal } from './dom.js';
 import { api } from './api.js';
 import { refreshTlsState, tlsSource, serviceCertId } from './state.js';
 
@@ -197,7 +197,7 @@ function wireAgentButtons(tbody) {
   // Regenerate enrollment token (re-enroll)
   $$('.agent-regen-btn', tbody).forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Reset this agent\'s enrollment? The agent will need to re-enroll with the new token.')) return;
+      if (!(await confirmModal('Reset this agent\'s enrollment? The agent will need to re-enroll with the new token.', { title: 'Reset Enrollment' }))) return;
       btn.disabled = true;
       try {
         const data = await api('POST', `/api/agents/${btn.dataset.id}/regenerate-token`);
@@ -211,7 +211,7 @@ function wireAgentButtons(tbody) {
   // Queue renew_agent_cert action
   $$('.agent-renew-cert-btn', tbody).forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm('Force this agent to renew its authentication certificate on the next heartbeat?')) return;
+      if (!(await confirmModal('Force this agent to renew its authentication certificate on the next heartbeat?', { title: 'Force Certificate Renewal' }))) return;
       btn.disabled = true;
       try {
         await api('POST', `/api/agents/${btn.dataset.id}/actions`, { action: 'renew_agent_cert' });
@@ -237,7 +237,7 @@ function wireAgentButtons(tbody) {
   // Delete agent
   $$('.agent-delete-btn', tbody).forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm(`Delete agent "${btn.dataset.name}"? This will also remove all its deployments.`)) return;
+      if (!(await confirmModal(`Delete agent "${btn.dataset.name}"? This will also remove all its deployments.`, { title: 'Delete Agent', okLabel: 'Delete', danger: true }))) return;
       btn.disabled = true;
       try {
         await api('DELETE', `/api/agents/${btn.dataset.id}`);
@@ -264,7 +264,7 @@ function wireAgentButtons(tbody) {
   // Delete deployment
   $$('.dep-delete-btn', tbody).forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!confirm(`Delete deployment "${btn.dataset.name}"?`)) return;
+      if (!(await confirmModal(`Delete deployment "${btn.dataset.name}"?`, { title: 'Delete Deployment', okLabel: 'Delete', danger: true }))) return;
       btn.disabled = true;
       try {
         await api('DELETE', `/api/agents/${btn.dataset.agentId}/deployments/${btn.dataset.depId}`);
@@ -371,10 +371,12 @@ function showTokenModal(token, expiresAt) {
   $('#token-display-value').textContent = token;
 
   titleEl.textContent = 'Enrollment Token';
-  hintEl.textContent = 'Copy this enrollment token now — it will not be shown again. It expires in 1 hour.';
-  let extraHtml = '<p style="font-size:.85rem;color:var(--text-muted)">Use this token when setting up the CertKeeper agent on the remote host. The agent will exchange it for an agent certificate during enrollment.</p>';
+  hintEl.textContent = 'Copy this enrollment token now \u2014 it will not be shown again.';
+  let extraHtml = '';
   if (expiresAt) {
-    extraHtml += `<p style="font-size:.8rem;color:var(--warning)">⏳ Expires: ${formatDate(expiresAt)}</p>`;
+    extraHtml += `<p style="font-size:.85rem;color:var(--text-muted)">Use this token to enroll the remote agent on your remote host.<br>It will expire at: <strong>${formatDateTime(expiresAt)}</strong></p>`;
+  } else {
+    extraHtml += '<p style="font-size:.85rem;color:var(--text-muted)">Use this token to enroll the remote agent on your remote host.</p>';
   }
   extraEl.innerHTML = extraHtml;
   show(extraEl);

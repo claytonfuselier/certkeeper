@@ -166,7 +166,13 @@ function parseCertbotCertificates(stdout) {
 
   for (const block of blocks) {
     const nameMatch = block.match(/Certificate Name:\s*(.+)/);
-    const domainsMatch = block.match(/Domains:\s*(.+)/);
+    // Domains may span multiple lines; capture the first line then any continuation
+    // lines that are indented (certbot indents overflow domains).
+    let domains = [];
+    const domainsMatch = block.match(/Domains:\s*(.+(?:\n\s{2,}.+)*)/);
+    if (domainsMatch) {
+      domains = domainsMatch[1].trim().split(/\s+/).filter(Boolean);
+    }
     const expiryMatch = block.match(/Expiry Date:\s*([^\(]+)/);
     const validMatch = block.match(/VALID:\s*(\d+)\s*day/i) || block.match(/INVALID[:\s]*([\w_]*)/i);
 
@@ -176,7 +182,7 @@ function parseCertbotCertificates(stdout) {
 
       certs.push({
         certbotName: nameMatch[1].trim(),
-        domains: domainsMatch ? domainsMatch[1].trim().split(/\s+/) : [],
+        domains,
         expiresAt: expiryMatch ? expiryMatch[1].trim() : null,
         valid: validMatch && !isInvalid,
         staging: isTestCert,
@@ -326,15 +332,25 @@ async function syncCertificates() {
     const status = cert.valid ? 'active' : 'expired';
 
     if (existing) {
-      db.run(`
-        UPDATE certificates SET domains = ?, status = ?, expires_at = ?, staging = ?, updated_at = datetime('now')
-        WHERE id = ? AND status NOT IN ('issuing', 'renewing')
-      `, [domains, status, expiresAt, cert.staging ? 1 : 0, existing.id]);
-    } else {
+      // Never overwrite domains with empty data from a parse failure
+      if (domains) {
+        db.run(`
+          UPDATE certificates SET domains = ?, status = ?, expires_at = ?, staging = ?, updated_at = datetime('now')
+          WHERE id = ? AND status NOT IN ('issuing', 'renewing')
+        `, [domains, status, expiresAt, cert.staging ? 1 : 0, existing.id]);
+      } else {
+        db.run(`
+          UPDATE certificates SET status = ?, expires_at = ?, staging = ?, updated_at = datetime('now')
+          WHERE id = ? AND status NOT IN ('issuing', 'renewing')
+        `, [status, expiresAt, cert.staging ? 1 : 0, existing.id]);
+      }
+    } else if (domains) {
       db.run(`
         INSERT INTO certificates (domains, status, expires_at, certbot_name, staging, issued_at)
         VALUES (?, ?, ?, ?, ?, datetime('now'))
       `, [domains, status, expiresAt, cert.certbotName, cert.staging ? 1 : 0]);
+    } else {
+      logger.warn('Skipping certbot certificate with no domains', { certbotName: cert.certbotName });
     }
   }
 
