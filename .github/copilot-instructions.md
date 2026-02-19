@@ -242,3 +242,7 @@ Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates
 - **Docker image:** Published to GHCR via `.github/workflows/docker-publish.yml`. Tagged `latest` + `v{version}` on main, `dev` + `v{version}-dev` on other branches.
 - **Release packages:** Built via `.github/workflows/release.yml` on GitHub Release publish. Produces `.deb`, `.rpm`, and `.tar.gz` for amd64 and arm64.
 - **Certbot conflict detection:** Install script and postinstall check for active `certbot.timer` and `/etc/cron.d/certbot`, warn and offer to disable.
+
+## TODO
+
+- Continue building out and testing notification options, including SMTP setup for email.
