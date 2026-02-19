@@ -10,6 +10,53 @@ const { getDb } = require('../db');
 // TLS certificate management for the admin UI
 // ---------------------------------------------------------------------------
 
+// Reference to the running HTTPS server (set once at startup)
+let _server = null;
+
+/**
+ * Store a reference to the HTTPS server so we can hot-reload TLS certs
+ * via server.setSecureContext() without restarting the process.
+ */
+function setServer(server) {
+  _server = server;
+}
+
+/**
+ * Apply the current on-disk TLS credentials to the running server
+ * via setSecureContext(). All new connections will use the updated cert
+ * immediately; existing connections finish with the old cert.
+ * Returns true if the context was updated, false if no server is available.
+ */
+function applyTlsToServer() {
+  if (!_server) {
+    logger.warn('Cannot hot-reload TLS — no server reference');
+    return false;
+  }
+
+  try {
+    const cert = fs.readFileSync(
+      fs.existsSync(CUSTOM_CERT) ? CUSTOM_CERT : SELF_SIGNED_CERT, 'utf-8',
+    );
+    const key = fs.readFileSync(
+      fs.existsSync(CUSTOM_KEY) ? CUSTOM_KEY : SELF_SIGNED_KEY, 'utf-8',
+    );
+
+    // Preserve the CA trust chain for mTLS agent verification
+    const opts = { cert, key };
+    try {
+      const { getCACert } = require('./ca');
+      opts.ca = [getCACert()];
+    } catch { /* CA not initialized yet — skip */ }
+
+    _server.setSecureContext(opts);
+    logger.info('TLS context hot-reloaded successfully');
+    return true;
+  } catch (err) {
+    logger.error('Failed to hot-reload TLS context', { error: err.message });
+    return false;
+  }
+}
+
 const TLS_DIR = path.join(config.paths.data, 'tls');
 const SELF_SIGNED_CERT = path.join(TLS_DIR, 'self-signed.crt');
 const SELF_SIGNED_KEY = path.join(TLS_DIR, 'self-signed.key');
@@ -250,6 +297,7 @@ function refreshServiceCert() {
 
   const result = installCustomCert(managed.cert, managed.key);
   if (result.ok) {
+    applyTlsToServer();
     logger.info('Service TLS certificate refreshed after renewal', { domain });
     return true;
   }
@@ -269,4 +317,6 @@ module.exports = {
   isServiceCert,
   setServiceDomain,
   refreshServiceCert,
+  setServer,
+  applyTlsToServer,
 };

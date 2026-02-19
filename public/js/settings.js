@@ -427,14 +427,12 @@ function initTlsSettings() {
   const saveBtn = $('#tls-save-btn');
   const errorEl = $('#tls-error');
   const successEl = $('#tls-success');
-  const restartNotice = $('#tls-restart-notice');
 
   modeSelect.addEventListener('change', updateTlsSections);
 
   saveBtn.addEventListener('click', async () => {
     hide(errorEl);
     hide(successEl);
-    hide(restartNotice);
 
     const mode = modeSelect.value;
     saveBtn.disabled = true;
@@ -459,10 +457,6 @@ function initTlsSettings() {
       successEl.textContent = 'TLS certificate updated.';
       show(successEl);
       toast('TLS certificate updated', 'success');
-
-      if (data.restart) {
-        show(restartNotice);
-      }
 
       loadSettings();
     } catch (err) {

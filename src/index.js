@@ -13,7 +13,7 @@ const SqliteSessionStore = require('./middleware/sessionStore');
 const scheduler = require('./services/scheduler');
 const agentMonitor = require('./services/agentMonitor');
 const { validateCloudflareToken } = require('./services/cloudflare');
-const { getTlsCredentials } = require('./services/tls');
+const { getTlsCredentials, setServer: setTlsServer } = require('./services/tls');
 const { ensureCA, getCACert } = require('./services/ca');
 const { ensureEncryptionKey, migrateSecretsToEncrypted, startKeyRotationCron } = require('./services/encryption');
 const { csrfProtection } = require('./middleware/csrf');
@@ -212,6 +212,10 @@ async function start() {
     // Trust our internal CA for agent cert verification
     ca: [caCert],
   }, app);
+
+  // Store server reference for TLS hot-reload (setSecureContext)
+  setTlsServer(server);
+
   server.listen(config.port, config.host, (err) => {
     if (err) {
       logger.error('Failed to bind', { err });

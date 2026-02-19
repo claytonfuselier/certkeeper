@@ -5,7 +5,7 @@ const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { validateCloudflareToken } = require('../services/cloudflare');
 const { ensureCloudflareIni, deleteCloudflareIni } = require('../services/certbot');
-const { getTlsSource, installCustomCert, removeCustomCert, readManagedCert, getServiceDomain, getServiceCertId, setServiceDomain } = require('../services/tls');
+const { getTlsSource, installCustomCert, removeCustomCert, readManagedCert, getServiceDomain, getServiceCertId, setServiceDomain, applyTlsToServer } = require('../services/tls');
 const scheduler = require('../services/scheduler');
 const { getEffectiveCloudflareToken, getEffectiveLetsencryptEmail } = require('../services/configHelpers');
 const { encrypt } = require('../services/encryption');
@@ -180,11 +180,11 @@ router.put('/tls', (req, res) => {
     if (!result.ok) return res.status(500).json({ error: result.error });
 
     setServiceDomain(null);
+    applyTlsToServer();
     logger.info('TLS reverted to self-signed via settings');
     return res.json({
       ok: true,
       tls: { source: 'self-signed' },
-      restart: true,
     });
   }
 
@@ -209,11 +209,11 @@ router.put('/tls', (req, res) => {
     if (!result.ok) return res.status(400).json({ error: result.error });
 
     setServiceDomain(managedDomain);
+    applyTlsToServer();
     logger.info('TLS set to managed certificate via settings', { domain: managedDomain });
     return res.json({
       ok: true,
       tls: { source: 'custom' },
-      restart: true,
     });
   }
 
@@ -226,11 +226,11 @@ router.put('/tls', (req, res) => {
   if (!result.ok) return res.status(400).json({ error: result.error });
 
   setServiceDomain(null); // custom upload — not a managed domain
+  applyTlsToServer();
   logger.info('Custom TLS certificate uploaded via settings');
   return res.json({
     ok: true,
     tls: { source: 'custom' },
-    restart: true,
   });
 });
 
