@@ -103,9 +103,22 @@ export function init() {
 }
 
 /** Called when navigating to /login. */
-export function loadLogin() {
-  // Clear any previous error
+export async function loadLogin() {
   hide($('#login-error'));
+
+  // If no user exists yet, redirect to setup
+  try {
+    const res = await fetch('/api/auth/me');
+    const data = await res.json();
+    if (res.ok && data.user) {
+      navigate('/');
+      return;
+    }
+    if (data.needsSetup) {
+      navigate('/setup', { replace: true });
+      return;
+    }
+  } catch { /* network error — stay on login */ }
 }
 
 /** Called when navigating to /setup. */

@@ -242,7 +242,44 @@ async function start() {
   startKeyRotationCron();
 
   // Clean up expired sessions every hour
-  setInterval(() => sessionStore.clearExpired(), 60 * 60 * 1000);
+  const sessionCleanupTimer = setInterval(() => sessionStore.clearExpired(), 60 * 60 * 1000);
+
+  // --- Graceful shutdown ---
+  let shuttingDown = false;
+  function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n${signal} received — shutting down…`);
+    logger.info(`Received ${signal}, shutting down gracefully…`);
+
+    // Stop accepting new connections
+    server.close(() => {
+      logger.info('HTTPS server closed');
+    });
+
+    // Stop background tasks
+    scheduler.stop();
+    agentMonitor.stop();
+    clearInterval(sessionCleanupTimer);
+
+    // Flush database to disk
+    try {
+      const shutdownDb = getDb();
+      shutdownDb.save();
+      logger.info('Database flushed to disk');
+    } catch (err) {
+      logger.error('Failed to flush database on shutdown', { err: err.message });
+    }
+
+    // Give in-flight requests a moment to finish, then exit
+    setTimeout(() => {
+      console.log('Shutdown complete');
+      process.exit(0);
+    }, 1000);
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start().catch((err) => {
