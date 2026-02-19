@@ -37,6 +37,22 @@ export function init() {
     const confirm = $('#setup-password-confirm').value;
     const email = $('#setup-email').value.trim();
 
+    // Client-side validation
+    if (!username || username.length < 3) {
+      errorEl.textContent = 'Username must be at least 3 characters.';
+      show(errorEl);
+      return;
+    }
+    if (!$('#setup-email').disabled && (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+      errorEl.textContent = 'Please enter a valid email address.';
+      show(errorEl);
+      return;
+    }
+    if (!password || password.length < 8) {
+      errorEl.textContent = 'Password must be at least 8 characters.';
+      show(errorEl);
+      return;
+    }
     if (password !== confirm) {
       errorEl.textContent = 'Passwords do not match.';
       show(errorEl);
@@ -96,10 +112,18 @@ export function loadLogin() {
 export async function loadSetup() {
   hide($('#setup-error'));
 
-  // Fetch email info from server (self-sufficient — no cached state needed)
+  // Verify setup is still needed — redirect to login if not
   try {
     const res = await fetch('/api/auth/me');
     const data = await res.json();
+    if (res.ok && data.user) {
+      navigate('/');
+      return;
+    }
+    if (!data.needsSetup) {
+      navigate('/login');
+      return;
+    }
     if (data.emailFromEnv) {
       const setupEmailInput = $('#setup-email');
       setupEmailInput.value = data.emailValue || '';

@@ -1,5 +1,4 @@
 const cron = require('node-cron');
-const config = require('../config');
 const logger = require('../logger');
 const certbot = require('./certbot');
 const { refreshServiceCert } = require('./tls');
@@ -72,17 +71,10 @@ function saveScheduleToDb(sched) {
 
 /**
  * Resolve which schedule to use:
- *   1. RENEWAL_CRON env var → use as-is (single cron expression, legacy)
- *   2. DB-stored schedule → use it
- *   3. Generate random schedule → persist and use
+ *   1. DB-stored schedule → use it
+ *   2. Generate random schedule → persist and use
  */
 function resolveSchedule() {
-  // Env override — single cron string (legacy / power users)
-  if (config.renewalCronFromEnv) {
-    return { type: 'env', crons: [config.renewalCron], display: `env: ${config.renewalCron}` };
-  }
-
-  // DB schedule
   let sched = loadScheduleFromDb();
   if (!sched) {
     sched = generateRandomSchedule();
@@ -158,8 +150,6 @@ function restart() {
 function getScheduleInfo() {
   const resolved = resolveSchedule();
   return {
-    fromEnv: resolved.type === 'env',
-    envCron: config.renewalCronFromEnv ? config.renewalCron : null,
     schedule: resolved.schedule || null,
     display: resolved.display,
   };

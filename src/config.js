@@ -119,6 +119,5 @@ module.exports = {
     cloudflareIni: path.join(dataDir, 'cloudflare.ini'),
   },
 
-  renewalCron: process.env.RENEWAL_CRON || '',
-  renewalCronFromEnv: !!process.env.RENEWAL_CRON,
+
 };

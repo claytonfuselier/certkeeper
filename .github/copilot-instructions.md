@@ -147,7 +147,7 @@ public/
 ### Renewal Schedule
 
 - Default: randomized twice-weekly (2 days, 3 apart, early-morning hours), persisted in DB `settings` table.
-- Override: `RENEWAL_CRON` env var.
+- Configurable in Settings → Renewal Schedule.
 - Two independent node-cron tasks (one per day).
 - `renewAll()` parses certbot output to detect actual renewals; only syncs DB + refreshes service TLS when something changed.
 

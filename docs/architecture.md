@@ -377,8 +377,8 @@ After changing TLS settings, the server requires a restart for the new certifica
 The auto-renewal scheduler runs twice weekly on two different days:
 
 - **Default:** Two days are randomly selected at startup (3+ days apart), with random early-morning hours
-- **Override:** The `RENEWAL_CRON` env var replaces the default with a single cron expression
 - **Database:** Schedule is persisted in the `settings` table so it survives restarts
+- **UI:** Schedule can be customized in Settings → Renewal Schedule
 
 Two independent `node-cron` tasks are registered (one per day). `renewAll()` runs `certbot renew`, parses the output to detect actual renewals, and only syncs DB / refreshes TLS when something changed.
 

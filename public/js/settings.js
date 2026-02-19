@@ -223,29 +223,16 @@ async function loadSettings() {
 
     // ---- Schedule pane ----
     const schedStatusEl = $('#sched-status');
-    const schedEnvNotice = $('#sched-env-notice');
-    const schedForm = $('#schedule-form');
-    const schedSubmitBtn = schedForm.querySelector('button[type="submit"]');
 
     schedStatusEl.innerHTML = `<span class="badge badge-active">Active</span> <span style="color:var(--text-muted);font-size:.85rem">${escapeHtml(schedInfo.display)}</span>`;
 
-    if (schedInfo.fromEnv) {
-      show(schedEnvNotice);
-      schedForm.querySelectorAll('select, input, button').forEach((el) => { el.disabled = true; });
-      schedSubmitBtn.textContent = 'Set via .env';
-    } else {
-      hide(schedEnvNotice);
-      schedForm.querySelectorAll('select, input, button').forEach((el) => { el.disabled = false; });
-      schedSubmitBtn.textContent = 'Save Schedule';
-
-      if (schedInfo.schedule) {
-        const s = schedInfo.schedule;
-        const pad = (n) => String(n).padStart(2, '0');
-        $('#sched-day1').value = String(s.day1);
-        $('#sched-time1').value = `${pad(s.hour1)}:${pad(s.min1)}`;
-        $('#sched-day2').value = String(s.day2);
-        $('#sched-time2').value = `${pad(s.hour2)}:${pad(s.min2)}`;
-      }
+    if (schedInfo.schedule) {
+      const s = schedInfo.schedule;
+      const pad = (n) => String(n).padStart(2, '0');
+      $('#sched-day1').value = String(s.day1);
+      $('#sched-time1').value = `${pad(s.hour1)}:${pad(s.min1)}`;
+      $('#sched-day2').value = String(s.day2);
+      $('#sched-time2').value = `${pad(s.hour2)}:${pad(s.min2)}`;
     }
 
     // ---- Agent monitoring pane ----

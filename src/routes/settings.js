@@ -245,10 +245,6 @@ router.get('/schedule', (_req, res) => {
 // PUT /api/settings/schedule — update renewal schedule
 // ---------------------------------------------------------------------------
 router.put('/schedule', (req, res) => {
-  if (config.renewalCronFromEnv) {
-    return res.status(400).json({ error: 'Renewal schedule is set via RENEWAL_CRON environment variable. Remove it from .env to manage via UI.' });
-  }
-
   const { day1, hour1, min1, day2, hour2, min2 } = req.body || {};
 
   // Validate all fields are integers in range

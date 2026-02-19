@@ -61,12 +61,6 @@ For detailed steps, see the [Cloudflare documentation on creating API tokens](ht
 | `CERTBOT_CONFIG_DIR` | `/etc/letsencrypt` | Where certbot reads/writes certificate data |
 | `CERTBOT_WORK_DIR` | `/var/lib/letsencrypt` | Certbot working directory |
 
-### Renewal
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RENEWAL_CRON` | *(auto-generated)* | Cron expression for auto-renewal. If not set, a random twice-weekly early-morning schedule is generated and persisted in the database. Can also be configured in Settings → Renew Schedule. |
-
 ---
 
 ## Docker
