@@ -14,7 +14,7 @@ const scheduler = require('./services/scheduler');
 const agentMonitor = require('./services/agentMonitor');
 const { validateCloudflareToken } = require('./services/cloudflare');
 const { getTlsCredentials, setServer: setTlsServer } = require('./services/tls');
-const { ensureCA, getCACert } = require('./services/ca');
+const { ensureCA, getCACert, getCRL, rebuildCRL } = require('./services/ca');
 const { ensureEncryptionKey, migrateSecretsToEncrypted, startKeyRotationCron } = require('./services/encryption');
 const { csrfProtection } = require('./middleware/csrf');
 
@@ -202,7 +202,11 @@ async function start() {
   ensureCA();
   const caCert = getCACert();
 
-  const server = https.createServer({
+  // Rebuild CRL on startup to ensure it's current
+  rebuildCRL();
+  const crl = getCRL();
+
+  const serverOpts = {
     cert: tls.cert,
     key: tls.key,
     // mTLS: request agent certs but don't reject connections without them.
@@ -211,7 +215,10 @@ async function start() {
     rejectUnauthorized: false,
     // Trust our internal CA for agent cert verification
     ca: [caCert],
-  }, app);
+  };
+  if (crl) serverOpts.crl = [crl];
+
+  const server = https.createServer(serverOpts, app);
 
   // Store server reference for TLS hot-reload (setSecureContext)
   setTlsServer(server);

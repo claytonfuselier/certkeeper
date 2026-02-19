@@ -44,8 +44,10 @@ function applyTlsToServer() {
     // Preserve the CA trust chain for mTLS agent verification
     const opts = { cert, key };
     try {
-      const { getCACert } = require('./ca');
+      const { getCACert, getCRL } = require('./ca');
       opts.ca = [getCACert()];
+      const crl = getCRL();
+      if (crl) opts.crl = [crl];
     } catch { /* CA not initialized yet — skip */ }
 
     _server.setSecureContext(opts);

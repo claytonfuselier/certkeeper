@@ -15,6 +15,7 @@ const config = require('../config');
 const CA_DIR = path.join(config.paths.data, 'ca');
 const CA_CERT_PATH = path.join(CA_DIR, 'ca.crt');
 const CA_KEY_PATH = path.join(CA_DIR, 'ca.key');
+const CRL_PATH = path.join(CA_DIR, 'crl.pem');
 
 // Agent cert lifetime: 45 days (renewed when ≤15 days remain)
 const AGENT_CERT_DAYS = 45;
@@ -369,7 +370,7 @@ function buildAgentCert(csrDer, caKeyPair, caCertDer, agentName, days) {
     derBitString(signature),
   ]);
 
-  return { certDer: cert, notBefore, notAfter };
+  return { certDer: cert, notBefore, notAfter, serialNumber };
 }
 
 // ---------------------------------------------------------------------------
@@ -489,14 +490,14 @@ function getCAKeyPair() {
  * @param {string} csrPem — PEM-encoded PKCS#10 CSR from the agent
  * @param {string} agentName — Agent name (used as CN in the cert)
  * @param {number} [days] — Cert lifetime in days (default: AGENT_CERT_DAYS)
- * @returns {{ certPem: string, fingerprint: string, expiresAt: Date }}
+ * @returns {{ certPem: string, fingerprint: string, serialHex: string, expiresAt: Date }}
  */
 function signCSR(csrPem, agentName, days) {
   const { privateKey, publicKey, caCertPem } = getCAKeyPair();
   const caCertDer = pemToDer(caCertPem, 'CERTIFICATE');
   const csrDer = pemToDer(csrPem, 'CERTIFICATE REQUEST');
 
-  const { certDer, notAfter } = buildAgentCert(
+  const { certDer, notAfter, serialNumber } = buildAgentCert(
     csrDer,
     { privateKey, publicKey },
     caCertDer,
@@ -508,15 +509,152 @@ function signCSR(csrPem, agentName, days) {
 
   // Compute fingerprint (SHA-256 of the DER cert)
   const fingerprint = crypto.createHash('sha256').update(certDer).digest('hex');
+  const serialHex = serialNumber.toString('hex');
 
-  return { certPem, fingerprint, expiresAt: notAfter };
+  return { certPem, fingerprint, serialHex, expiresAt: notAfter };
+}
+
+// ---------------------------------------------------------------------------
+// Certificate Revocation List (CRL)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a DER-encoded X.509 v2 CRL signed by the CA.
+ * @param {Array<{serial_hex: string, revoked_at: string}>} revokedEntries
+ * @returns {Buffer} DER-encoded CRL
+ */
+function buildCRL(revokedEntries) {
+  const { privateKey, publicKey, caCertPem } = getCAKeyPair();
+  const caCertDer = pemToDer(caCertPem, 'CERTIFICATE');
+
+  // Extract issuer from the CA cert
+  const caCertInfo = parseTLV(caCertDer);
+  const caCertFields = parseSequenceChildren(caCertInfo.value);
+  const caTbs = caCertFields[0];
+  const caTbsFields = parseSequenceChildren(caTbs.value);
+  let issuerField;
+  let fieldIdx = 0;
+  for (const f of caTbsFields) {
+    if (f.tag === 0xa0) { fieldIdx++; continue; }
+    if (fieldIdx === 3) { issuerField = f; break; }
+    fieldIdx++;
+  }
+  const issuerDer = Buffer.concat([
+    Buffer.from([issuerField.tag]),
+    derLength(issuerField.value.length),
+    issuerField.value,
+  ]);
+
+  const now = new Date();
+  const nextUpdate = new Date();
+  nextUpdate.setDate(nextUpdate.getDate() + 7); // CRL valid for 7 days
+
+  // Build revoked certificates entries
+  const revokedSeqs = revokedEntries.map((entry) => {
+    const serialBuf = Buffer.from(entry.serial_hex, 'hex');
+    const revokedDate = entry.revoked_at ? new Date(entry.revoked_at + 'Z') : now;
+    return derSequence([
+      derInteger(serialBuf),
+      derUtcTime(revokedDate),
+    ]);
+  });
+
+  // TBSCertList
+  const tbsParts = [
+    derInteger(1), // version v2
+    buildAlgorithmIdentifier(),
+    issuerDer,
+    derUtcTime(now), // thisUpdate
+    derUtcTime(nextUpdate), // nextUpdate
+  ];
+
+  // Only include revokedCertificates SEQUENCE if there are entries
+  if (revokedSeqs.length > 0) {
+    tbsParts.push(derSequence(revokedSeqs));
+  }
+
+  const tbsCertList = derSequence(tbsParts);
+
+  const signature = crypto.sign('sha256', tbsCertList, privateKey);
+
+  const crl = derSequence([
+    tbsCertList,
+    buildAlgorithmIdentifier(),
+    derBitString(signature),
+  ]);
+
+  return crl;
+}
+
+/**
+ * Rebuild the CRL from all revoked serials in the database and write to disk.
+ * Also triggers a TLS context reload so the server immediately rejects revoked certs.
+ */
+function rebuildCRL() {
+  const { getDb } = require('../db');
+  const db = getDb();
+
+  const revoked = db.all('SELECT serial_hex, revoked_at FROM revoked_agent_certs');
+  const crlDer = buildCRL(revoked);
+  const crlPem = derToPem(crlDer, 'X509 CRL');
+
+  fs.mkdirSync(CA_DIR, { recursive: true });
+  fs.writeFileSync(CRL_PATH, crlPem, { mode: 0o644 });
+  logger.info('CRL rebuilt', { revokedCount: revoked.length, path: CRL_PATH });
+
+  // Hot-reload TLS context so the server immediately rejects revoked certs
+  try {
+    const { applyTlsToServer } = require('./tls');
+    applyTlsToServer();
+  } catch { /* TLS module may not be ready during early startup */ }
+}
+
+/**
+ * Revoke an agent certificate by its X.509 serial number (hex).
+ * Adds the serial to the revoked_agent_certs table and rebuilds the CRL.
+ * @param {string} serialHex — hex-encoded X.509 serial number
+ * @param {string} [agentName] — agent name for audit trail
+ */
+function revokeAgentCert(serialHex, agentName) {
+  if (!serialHex) return;
+
+  const { getDb } = require('../db');
+  const db = getDb();
+
+  // Avoid duplicates (e.g. delete + re-enroll racing)
+  const existing = db.get('SELECT id FROM revoked_agent_certs WHERE serial_hex = ?', [serialHex]);
+  if (existing) return;
+
+  db.run(
+    'INSERT INTO revoked_agent_certs (serial_hex, agent_name) VALUES (?, ?)',
+    [serialHex, agentName || null],
+  );
+
+  logger.info('Agent certificate revoked', { serialHex: serialHex.slice(0, 16) + '…', agentName });
+  rebuildCRL();
+}
+
+/**
+ * Get the CRL PEM if it exists on disk, or null.
+ */
+function getCRL() {
+  try {
+    if (fs.existsSync(CRL_PATH)) {
+      return fs.readFileSync(CRL_PATH, 'utf-8');
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 
 module.exports = {
   ensureCA,
   getCACert,
+  getCRL,
   signCSR,
+  revokeAgentCert,
+  rebuildCRL,
   AGENT_CERT_DAYS,
   CA_CERT_PATH,
   CA_DIR,
+  CRL_PATH,
 };

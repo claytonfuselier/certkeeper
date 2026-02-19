@@ -6,7 +6,7 @@ const config = require('../config');
 const { getDb, toSqliteDatetime, parsePendingActions, parseIntId } = require('../db');
 const logger = require('../logger');
 const { requireAgentAuth, requireEnrollmentAuth } = require('../middleware/agentAuth');
-const { signCSR, getCACert, AGENT_CERT_DAYS } = require('../services/ca');
+const { signCSR, getCACert, AGENT_CERT_DAYS, revokeAgentCert } = require('../services/ca');
 
 const router = express.Router();
 
@@ -33,7 +33,7 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
   }
 
   try {
-    const { certPem, fingerprint, expiresAt } = signCSR(csr, agent.name);
+    const { certPem, fingerprint, serialHex, expiresAt } = signCSR(csr, agent.name);
     const caCert = getCACert();
     const db = getDb();
 
@@ -56,13 +56,14 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
     const intervalSeconds = parseInt(intervalRow?.value, 10) || 180;
     const nextContactAt = toSqliteDatetime(new Date(Date.now() + intervalSeconds * 1000));
 
-    // Store the cert fingerprint and expiry, burn the enrollment token,
+    // Store the cert fingerprint, serial, and expiry, burn the enrollment token,
     // and record initial contact info — all in a single UPDATE.
     const ip = req.ip || req.socket?.remoteAddress || '';
     db.run(
       `UPDATE agents SET
         cert_fingerprint = ?,
         cert_expires_at = ?,
+        cert_serial_hex = ?,
         enrollment_token_hash = NULL,
         enrollment_expires_at = NULL,
         status = 'online',
@@ -71,7 +72,7 @@ router.post('/enroll', requireEnrollmentAuth, (req, res) => {
         last_contact_ip = ?,
         updated_at = datetime('now')
       WHERE id = ?`,
-      [fingerprint, expiresAtStr, nextContactAt, ip, agent.id],
+      [fingerprint, expiresAtStr, serialHex, nextContactAt, ip, agent.id],
     );
 
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
@@ -279,7 +280,7 @@ router.get('/deployments/:id/bundle', (req, res) => {
 // Body: { csr: "<PEM-encoded PKCS#10 CSR>" }
 // Response: { certificate, ca_certificate, fingerprint, expires_at }
 // ---------------------------------------------------------------------------
-router.post('/renew-cert', (req, res) => {
+router.post('/renew-cert', async (req, res) => {
   const { csr } = req.body || {};
   const agent = req.agent;
 
@@ -290,7 +291,7 @@ router.post('/renew-cert', (req, res) => {
   }
 
   try {
-    const { certPem, fingerprint, expiresAt } = signCSR(csr, agent.name);
+    const { certPem, fingerprint, serialHex, expiresAt } = signCSR(csr, agent.name);
     const caCert = getCACert();
     const db = getDb();
 
@@ -309,6 +310,18 @@ router.post('/renew-cert', (req, res) => {
       });
     }
 
+    // Revoke the old agent certificate via CRL (if serial is known).
+    // The old cert's fingerprint is preserved for a grace period (prev_cert_fingerprint)
+    // so the agent can still authenticate at the application layer during transition,
+    // but the cert is properly revoked at the X.509 level.
+    if (agent.cert_serial_hex) {
+      try {
+        await revokeAgentCert(agent.cert_serial_hex, agent.name);
+      } catch (err) {
+        logger.warn('Failed to revoke old agent cert on renewal', { agentId: agent.id, error: err.message });
+      }
+    }
+
     // Preserve the old fingerprint so both certs are accepted until the old one expires
     db.run(
       `UPDATE agents SET
@@ -316,10 +329,11 @@ router.post('/renew-cert', (req, res) => {
         prev_cert_expires_at = cert_expires_at,
         cert_fingerprint = ?,
         cert_expires_at = ?,
+        cert_serial_hex = ?,
         cert_serial = cert_serial + 1,
         updated_at = datetime('now')
       WHERE id = ?`,
-      [fingerprint, expiresAtStr, agent.id],
+      [fingerprint, expiresAtStr, serialHex, agent.id],
     );
 
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [

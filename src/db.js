@@ -264,6 +264,7 @@ async function initDatabase() {
       prev_cert_fingerprint   TEXT    UNIQUE,
       prev_cert_expires_at    TEXT,
       cert_serial             INTEGER NOT NULL DEFAULT 0,
+      cert_serial_hex         TEXT,
       enabled                 INTEGER NOT NULL DEFAULT 1,
       status                  TEXT,
       next_contact_at         TEXT,
@@ -285,6 +286,13 @@ async function initDatabase() {
       last_deployed_hash  TEXT,
       created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
       updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS revoked_agent_certs (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      serial_hex      TEXT    NOT NULL UNIQUE,
+      agent_name      TEXT,
+      revoked_at      TEXT    NOT NULL DEFAULT (datetime('now'))
     );
   `);
 
@@ -374,6 +382,36 @@ async function initDatabase() {
     }
   } catch (migErr) {
     logger.error('Agent name unique index migration failed', { err: migErr.message });
+  }
+
+  // Add cert_serial_hex column to agents if missing (X.509 serial for CRL revocation)
+  try {
+    const agentDDL = _db._db.exec(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='agents'"
+    );
+    const ddl = agentDDL.length > 0 && agentDDL[0].values.length > 0
+      ? agentDDL[0].values[0][0]
+      : '';
+    if (ddl && !ddl.includes('cert_serial_hex')) {
+      logger.info('Migrating agents table to store X.509 serial numbers');
+      _db.exec('ALTER TABLE agents ADD COLUMN cert_serial_hex TEXT');
+    }
+  } catch (migErr) {
+    logger.error('Agent cert_serial_hex migration failed', { err: migErr.message });
+  }
+
+  // Create revoked_agent_certs table if missing (CRL-based revocation)
+  try {
+    _db.exec(`
+      CREATE TABLE IF NOT EXISTS revoked_agent_certs (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        serial_hex      TEXT    NOT NULL UNIQUE,
+        agent_name      TEXT,
+        revoked_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  } catch (migErr) {
+    logger.error('revoked_agent_certs table creation failed', { err: migErr.message });
   }
 
   // Seed default agent monitoring settings if not present

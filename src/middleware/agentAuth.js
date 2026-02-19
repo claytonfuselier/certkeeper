@@ -20,7 +20,7 @@ function certFingerprintFromDer(derBuffer) {
 
 // Columns needed from agents table for mTLS authentication + downstream handlers
 const AGENT_AUTH_COLUMNS = `id, name, enabled, status,
-  cert_expires_at, prev_cert_expires_at, cert_serial,
+  cert_expires_at, prev_cert_expires_at, cert_serial, cert_serial_hex,
   pending_actions, config_version,
   last_contact_at, next_contact_at, last_contact_ip`;
 

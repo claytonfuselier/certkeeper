@@ -237,7 +237,7 @@ function wireAgentButtons(tbody) {
   // Delete agent
   $$('.agent-delete-btn', tbody).forEach((btn) => {
     btn.addEventListener('click', async () => {
-      if (!(await confirmModal(`Delete agent "${btn.dataset.name}"? This will also remove all its deployments.`, { title: 'Delete Agent', okLabel: 'Delete', danger: true }))) return;
+      if (!(await confirmModal(`Delete agent \u201c${btn.dataset.name}\u201d?\nThis will also remove all its deployments.`, { title: 'Delete Agent', okLabel: 'Delete', danger: true }))) return;
       btn.disabled = true;
       try {
         await api('DELETE', `/api/agents/${btn.dataset.id}`);

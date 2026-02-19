@@ -4,7 +4,7 @@ const { getDb, toSqliteDatetime, parsePendingActions, parseIntId } = require('..
 const logger = require('../logger');
 const { requireAuth } = require('../middleware/auth');
 const { hashToken } = require('../middleware/agentAuth');
-const { getCACert } = require('../services/ca');
+const { getCACert, revokeAgentCert } = require('../services/ca');
 const { getTlsSource, isServiceCert } = require('../services/tls');
 
 const router = express.Router();
@@ -215,7 +215,7 @@ router.post('/:id/regenerate-token', (req, res) => {
   const id = parseIntId(req.params.id);
   if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT id, name FROM agents WHERE id = ?', [id]);
+  const agent = db.get('SELECT id, name, cert_serial_hex FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
 
   // Generate new enrollment token and clear existing cert (re-enrollment)
@@ -224,12 +224,18 @@ router.post('/:id/regenerate-token', (req, res) => {
   const enrollHash = hashToken(enrollToken);
   const expiresAt = toSqliteDatetime(new Date(Date.now() + ENROLLMENT_TOKEN_TTL_MS));
 
+  // Revoke the old agent certificate via CRL before re-enrollment
+  if (agent.cert_serial_hex) {
+    revokeAgentCert(agent.cert_serial_hex, agent.name);
+  }
+
   db.run(
     `UPDATE agents SET
       enrollment_token_hash = ?, enrollment_expires_at = ?,
       cert_fingerprint = NULL, cert_expires_at = NULL,
       prev_cert_fingerprint = NULL, prev_cert_expires_at = NULL,
       cert_serial = cert_serial + 1,
+      cert_serial_hex = NULL,
       status = NULL, next_contact_at = NULL,
       config_version = 0, pending_actions = NULL,
       updated_at = datetime('now')
@@ -256,8 +262,13 @@ router.delete('/:id', (req, res) => {
   const id = parseIntId(req.params.id);
   if (!id) return res.status(400).json({ error: 'Invalid agent ID' });
   const db = getDb();
-  const agent = db.get('SELECT id, name FROM agents WHERE id = ?', [id]);
+  const agent = db.get('SELECT id, name, cert_serial_hex FROM agents WHERE id = ?', [id]);
   if (!agent) return res.status(404).json({ error: 'Not found' });
+
+  // Revoke the agent's mTLS certificate via CRL
+  if (agent.cert_serial_hex) {
+    revokeAgentCert(agent.cert_serial_hex, agent.name);
+  }
 
   // CASCADE should handle deployments, but be explicit
   db.run('DELETE FROM deployments WHERE agent_id = ?', [agent.id]);

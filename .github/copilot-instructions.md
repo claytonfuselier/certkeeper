@@ -111,8 +111,9 @@ public/
 - **`settings`** — `key, value, updated_at` (stores email, CF token (encrypted), TLS domain, renewal schedule, notification configs (encrypted), agent monitoring settings)
 - **`audit_log`** — `id, action, details (JSON), created_at`
 - **`sessions`** — `sid, sess, expired` (express-session store)
-- **`agents`** — `id, name, enrollment_token_hash, enrollment_expires_at, cert_fingerprint (SHA-256, UNIQUE), cert_expires_at, prev_cert_fingerprint (UNIQUE), prev_cert_expires_at, cert_serial, enabled, status (online/offline/NULL), next_contact_at, config_version, pending_actions (JSON), last_contact_at, last_contact_ip, created_at, updated_at`
+- **`agents`** — `id, name, enrollment_token_hash, enrollment_expires_at, cert_fingerprint (SHA-256, UNIQUE), cert_expires_at, prev_cert_fingerprint (UNIQUE), prev_cert_expires_at, cert_serial, cert_serial_hex (X.509 serial for CRL), enabled, status (online/offline/NULL), next_contact_at, config_version, pending_actions (JSON), last_contact_at, last_contact_ip, created_at, updated_at`
 - **`deployments`** — `id, agent_id (FK → agents, CASCADE), certificate_id (FK → certificates, CASCADE), name, enabled, last_deployed_at, last_deployed_hash, created_at, updated_at` — ties an agent to a certificate
+- **`revoked_agent_certs`** — `id, serial_hex (UNIQUE), agent_name, revoked_at` — CRL backing store for revoked agent certificates
 
 ### Security
 
@@ -122,6 +123,7 @@ public/
 - **SQL injection prevention:** All queries use parameterized statements. Integer route params validated with `parseIntId()` before reaching any query.
 - **Session security:** Server-side SQLite session store. Auto-generated 48-byte session secret. Auth routes return only `id`/`username` — no password hashes.
 - **Secret masking:** GET responses for notification channels and Cloudflare tokens return `hasToken: true` instead of raw values.
+- **Agent certificate revocation:** X.509 v2 CRL (Certificate Revocation List) stored at `data/ca/crl.pem`. Agent certs are revoked (serial added to `revoked_agent_certs` table, CRL rebuilt and loaded into HTTPS server via `setSecureContext()`) when agents are deleted, re-enrolled, or on cert renewal (old cert is revoked at the X.509 level while the fingerprint grace period continues at the application layer). CRL is rebuilt on startup.
 
 ### Certificate Lifecycle
 
@@ -130,8 +132,8 @@ public/
 3. **Retry:** Frontend deletes errored entry, re-submits same request.
 4. **Reissue:** Frontend sends `overrideRevoked: true` to replace a revoked entry.
 5. **Revoke:** `DELETE /api/certs/:id?action=revoke` → certbot revoke, keeps row as `revoked`.
-6. **Remove:** `DELETE /api/certs/:id?action=remove` → deletes row from DB + cert files from disk, no certbot revoke.
-7. **Default delete:** `DELETE /api/certs/:id` (no action) → certbot revoke, then remove from DB.
+6. **Remove:** `DELETE /api/certs/:id?action=remove` → for active certs, fires async certbot revoke (with `--delete-after-revoke`) then deletes from DB immediately. For expired/revoked/error/pending certs, skips revocation and just deletes files from disk + DB row.
+7. **Default delete:** `DELETE /api/certs/:id` (no action) → same smart revocation check as remove (skips revoke for expired/revoked/error), but runs synchronously. Deletes from DB after.
 8. **Bulk actions:** `POST /api/certs/bulk` with `{ ids: [...], action }` — supports `renew`, `revoke`, `remove`, `auto_renew_on`, `auto_renew_off`. Validates non-empty `ids` array. Returns `{ succeeded, failed, errors }`.
 
 ### Certificate List UI
@@ -182,11 +184,11 @@ Notification configs are stored in `settings` as JSON values keyed by `notif_<ch
 Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates from CertKeeper. All agents use **mTLS** (mutual TLS) authentication with a one-time enrollment token for initial bootstrap.
 
 - **Agents** represent a remote host. Creating an agent generates a one-time **enrollment token** (`cke_<64 hex>`, valid 1 hour). The agent exchanges the token + a locally-generated CSR at `POST /api/agent/enroll` to receive an agent certificate signed by CertKeeper's internal CA. After enrollment, all auth is via the agent certificate.
-- **Internal CA** (`src/services/ca.js`) generates a 4096-bit RSA root CA on first use (stored in `data/ca/`). Signs agent CSRs with 45-day agent certificates (`AGENT_CERT_DAYS = 45`). Pure Node.js crypto — no openssl dependency. All ASN.1/DER encoding is hand-rolled.
+- **Internal CA** (`src/services/ca.js`) generates a 4096-bit RSA root CA on first use (stored in `data/ca/`). Signs agent CSRs with 45-day agent certificates (`AGENT_CERT_DAYS = 45`). Maintains an X.509 v2 CRL (`data/ca/crl.pem`) for certificate revocation. Pure Node.js crypto — no openssl dependency. All ASN.1/DER encoding is hand-rolled.
 - **Enrollment flow:** Agent generates key pair → creates CSR → `POST /api/agent/enroll` with Bearer token → receives signed cert + CA cert → enrollment token is burned.
-- **Cert renewal:** Agent calls `POST /api/agent/renew-cert` (authenticated by current cert) with a new CSR → receives a fresh cert. The old fingerprint is preserved in `prev_cert_fingerprint` and both certs are accepted until the old one naturally expires. Fully automated.
+- **Cert renewal:** Agent calls `POST /api/agent/renew-cert` (authenticated by current cert) with a new CSR → receives a fresh cert. The old fingerprint is preserved in `prev_cert_fingerprint` and both certs are accepted until the old one naturally expires. The old cert's serial is added to the CRL (revoked at the X.509 level), but the application-layer grace period via `prev_cert_fingerprint` is unaffected since `rejectUnauthorized: false`. Fully automated.
 - **Re-enrollment:** If an agent's cert expires (e.g. prolonged outage), the admin clicks "Re-enroll" to generate a new enrollment token. The agent re-registers with a fresh key pair. Deployments and all configuration are preserved.
-- **HTTPS server** is configured with `requestCert: true, rejectUnauthorized: false` — requests agent certs but doesn't reject browsers without them. The internal CA cert is in the server's `ca` array so Node verifies agent certs.
+- **HTTPS server** is configured with `requestCert: true, rejectUnauthorized: false` — requests agent certs but doesn't reject browsers without them. The internal CA cert and CRL are in the server's `ca` / `crl` arrays so Node verifies agent certs and checks revocation status.
 - **Agent middleware** (`agentAuth.js`) extracts the agent cert fingerprint from the TLS socket, looks it up in the `agents` table (checking both `cert_fingerprint` and `prev_cert_fingerprint`), verifies the agent is enabled and the cert hasn't expired. Sets `req.agent` with the full agent row.
 - **Deployments** tie an agent to a certificate. An agent can have many deployments. Each deployment has a name, references a certificate, and tracks `last_deployed_at` / `last_deployed_hash` so the agent knows when a cert has been renewed.
 - **Admin routes** (`/api/agents`) are session-authed and provide full CRUD for agents and their deployments. Includes `GET /api/agents/ca-cert` for downloading the CA certificate.
@@ -212,8 +214,8 @@ Agents are remote systems (e.g. a "certkeeper-agent" CLI) that pull certificates
 5. Check certbot availability (non-blocking warning if missing)
 6. Recover certificates stuck in `issuing`/`renewing` from crash → mark as `error`
 7. Load TLS credentials (self-signed / custom / managed)
-8. Initialize internal CA for mTLS (`ensureCA()`)
-9. Start HTTPS server with `requestCert: true` and CA in trust chain
+8. Initialize internal CA for mTLS (`ensureCA()`), rebuild CRL from `revoked_agent_certs` table
+9. Start HTTPS server with `requestCert: true`, CA in trust chain, and CRL loaded
 10. Start renewal scheduler (node-cron)
 11. Start agent monitor (node-cron, every 1 minute)
 12. Start encryption key rotation cron (daily check, 30-day rotation)

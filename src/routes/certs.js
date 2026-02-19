@@ -234,19 +234,50 @@ router.delete('/:id', async (req, res) => {
 
     const action = req.query.action; // 'remove' | 'revoke' | undefined
 
-    // Revoke via certbot (for 'revoke' action or default)
-    if (action !== 'remove' && cert.certbot_name) {
+    // Statuses where no valid cert exists on disk — skip certbot revocation
+    const skipRevoke = ['expired', 'revoked', 'error', 'pending', 'issuing'].includes(cert.status);
+
+    if (action === 'remove') {
+      // Remove: revoke first (async) if cert is active, then delete from DB + disk
+      if (!skipRevoke && cert.certbot_name) {
+        // Fire-and-forget: revoke handles disk cleanup via --delete-after-revoke
+        certbot.revokeCertificate(cert.certbot_name).then((result) => {
+          if (result.success) {
+            logger.info('Certificate revoked during remove', { id: cert.id, domains: cert.domains });
+          } else {
+            logger.warn('Revocation failed during remove, attempting disk cleanup', { id: cert.id, message: result.message });
+            certbot.deleteCertificate(cert.certbot_name).catch(() => {});
+          }
+        }).catch((err) => {
+          logger.warn('Revocation error during remove, attempting disk cleanup', { id: cert.id, error: err.message });
+          certbot.deleteCertificate(cert.certbot_name).catch(() => {});
+        });
+      } else if (cert.certbot_name) {
+        // No revocation needed — just delete files from disk
+        const delResult = await certbot.deleteCertificate(cert.certbot_name);
+        if (!delResult.success) {
+          logger.warn('Failed to delete cert from disk during remove', { id: cert.id, message: delResult.message });
+        }
+      }
+
+      db.run('DELETE FROM certificates WHERE id = ?', [cert.id]);
+      db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
+        'cert_remove', JSON.stringify({ id: cert.id, domains: cert.domains }),
+      ]);
+      return res.json({ ok: true });
+    }
+
+    // Revoke via certbot (for 'revoke' action or default) — skip if not applicable
+    if (!skipRevoke && cert.certbot_name) {
       const result = await certbot.revokeCertificate(cert.certbot_name);
       if (!result.success) {
         return res.status(500).json({ error: result.message });
       }
-    }
-
-    // Delete cert files from disk (for 'remove' action — cert was not revoked above)
-    if (action === 'remove' && cert.certbot_name) {
-      const result = await certbot.deleteCertificate(cert.certbot_name);
-      if (!result.success) {
-        logger.warn('Failed to delete cert from disk during remove', { id: cert.id, message: result.message });
+    } else if (cert.certbot_name && action !== 'revoke') {
+      // Default delete of expired/error cert — just clean up disk
+      const delResult = await certbot.deleteCertificate(cert.certbot_name);
+      if (!delResult.success) {
+        logger.warn('Failed to delete cert from disk during delete', { id: cert.id, message: delResult.message });
       }
     }
 
@@ -257,12 +288,12 @@ router.delete('/:id', async (req, res) => {
         [cert.id],
       );
     } else {
-      // Remove from DB ('remove' action or default)
+      // Default delete — remove from DB
       db.run('DELETE FROM certificates WHERE id = ?', [cert.id]);
     }
 
     db.run("INSERT INTO audit_log (action, details) VALUES (?, ?)", [
-      action === 'remove' ? 'cert_remove' : 'cert_revoke',
+      action === 'revoke' ? 'cert_revoke' : 'cert_remove',
       JSON.stringify({ id: cert.id, domains: cert.domains }),
     ]);
 
@@ -408,7 +439,21 @@ router.post('/bulk', async (req, res) => {
             results.errors.push({ id, error: `Cannot remove cert with status "${cert.status}"` });
             continue;
           }
-          if (cert.certbot_name) {
+          const skipRevoke = ['expired', 'revoked', 'error', 'pending'].includes(cert.status);
+          if (!skipRevoke && cert.certbot_name) {
+            // Fire-and-forget: revoke handles disk cleanup via --delete-after-revoke
+            certbot.revokeCertificate(cert.certbot_name).then((result) => {
+              if (result.success) {
+                logger.info('Certificate revoked during bulk remove', { id, domains: cert.domains });
+              } else {
+                logger.warn('Revocation failed during bulk remove, attempting disk cleanup', { id, message: result.message });
+                certbot.deleteCertificate(cert.certbot_name).catch(() => {});
+              }
+            }).catch((err) => {
+              logger.warn('Revocation error during bulk remove, attempting disk cleanup', { id, error: err.message });
+              certbot.deleteCertificate(cert.certbot_name).catch(() => {});
+            });
+          } else if (cert.certbot_name) {
             const delResult = await certbot.deleteCertificate(cert.certbot_name);
             if (!delResult.success) {
               logger.warn('Failed to delete cert from disk during bulk remove', { id, message: delResult.message });
