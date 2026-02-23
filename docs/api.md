@@ -285,13 +285,13 @@ Update certificate settings.
 
 ### DELETE /api/certs/:id
 
-Delete a certificate. Behavior depends on the `action` query parameter:
+Delete a certificate. Behavior depends on the `action` query parameter and the certificate's current status:
 
 | Query | Behavior |
 |-------|----------|
 | `?action=revoke` | Revoke via certbot, keep row in DB as `revoked` |
-| `?action=remove` | Delete from DB + remove cert files from disk, no certbot revoke |
-| *(no action)* | Revoke via certbot, then delete from DB |
+| `?action=remove` | Delete from DB immediately. For active/renewing certs, fires async (fire-and-forget) certbot revocation with `--delete-after-revoke`. For expired/revoked/error/pending/issuing certs, skips revocation and only deletes cert files from disk. |
+| *(no action)* | For active/renewing certs, revoke synchronously via certbot, then delete from DB. For expired/revoked/error/pending/issuing certs, skip revocation, delete cert files from disk, then delete from DB. |
 
 **Auth:** Session
 
@@ -449,12 +449,11 @@ Three modes of operation:
 ```json
 {
   "ok": true,
-  "tls": { "source": "custom" },
-  "restart": true
+  "tls": { "source": "custom" }
 }
 ```
 
-> `restart: true` indicates the server needs a restart for new TLS certs to take effect.
+> TLS changes are applied immediately via hot-reload (`setSecureContext()`). No server restart is required.
 
 **Errors:** `409` when reverting to self-signed (`action: "reset"`) while agents exist. Agents cannot verify the server's identity with a self-signed certificate.
 
@@ -484,9 +483,15 @@ Get the current auto-renewal schedule.
 **Response (200):**
 ```json
 {
-  "source": "database",
-  "day1": { "day": 1, "dayName": "Monday", "hour": 3, "minute": 42, "cron": "42 3 * * 1" },
-  "day2": { "day": 4, "dayName": "Thursday", "hour": 2, "minute": 17, "cron": "17 2 * * 4" }
+  "schedule": {
+    "day1": 1,
+    "hour1": 3,
+    "min1": 42,
+    "day2": 4,
+    "hour2": 2,
+    "min2": 17
+  },
+  "display": "Monday 03:42, Thursday 02:17"
 }
 ```
 

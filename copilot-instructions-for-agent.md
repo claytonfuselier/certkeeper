@@ -65,6 +65,8 @@ The agent uses its agent certificate for all subsequent API calls. No tokens, no
 
 All endpoints except `/enroll` and `/time` require mTLS authentication (agent certificate).
 
+**Request format:** All POST requests must include `Content-Type: application/json` header and a JSON body.
+
 ---
 
 ### POST /api/agent/enroll
@@ -105,6 +107,8 @@ Authorization: Bearer cke_<enrollment_token>
 | `401` | Invalid or expired enrollment token |
 | `403` | Agent is disabled (admin disabled the agent before enrollment completed) |
 | `409` | Two possible causes: **(a)** Agent is already enrolled — do not retry, inform the operator (no `retry` field in body). **(b)** Fingerprint collision — retry with a new key pair (`retry: true` in body). |
+
+**CSR subject:** The server ignores the CSR's subject field and sets the agent certificate's subject to `CN=<agent_name>, O=CertKeeper Agent`. The CSR can use any subject — only the public key and signature are extracted.
 
 **After receiving the response:**
 1. Save `certificate` to `client.crt`
@@ -186,6 +190,7 @@ Send the `config_version` value from the **previous** heartbeat response. This t
     "name": "docker-host-01"
   },
   "deployments": 3,
+  "deployments_hash": "a1b2c3d4e5f67890",
   "server_time": "2026-02-15T10:30:00.000Z",
   "cert_expires_at": "2026-04-02 14:30:00",
   "heartbeat_interval": 180,
@@ -202,6 +207,7 @@ Send the `config_version` value from the **previous** heartbeat response. This t
 | `agent.id` | number | Agent's server-side ID |
 | `agent.name` | string | Agent's display name |
 | `deployments` | number | Total number of deployments assigned to this agent |
+| `deployments_hash` | string\|null | SHA-256 hash (16 hex chars) of deployment state (IDs, enabled flags, certificate IDs, and content hashes). `null` if no deployments. Compare with your locally stored value — if different, call `GET /api/agent/deployments` to sync. |
 | `server_time` | string | Server's current time (ISO 8601) — use for time-skew detection |
 | `cert_expires_at` | string | When the agent's mTLS agent cert expires (`YYYY-MM-DD HH:MM:SS` UTC) |
 | `heartbeat_interval` | number | Seconds until the next heartbeat is expected. The agent **must** use this value as its heartbeat timer. |
@@ -254,7 +260,6 @@ List all deployments assigned to this agent. Each deployment represents a certif
     "certificate_id": 5,
     "domains": ["example.com", "www.example.com"],
     "cert_status": "active",
-    "certbot_name": "example.com",
     "expires_at": "2026-05-15 00:00:00",
     "issued_at": "2026-02-14 00:00:00",
     "last_renewed_at": null,
@@ -280,12 +285,22 @@ List all deployments assigned to this agent. Each deployment represents a certif
 | `last_deployed_at` | When this agent last downloaded this deployment's bundle |
 | `last_deployed_hash` | The `content_hash` at the time of last download |
 
-**Polling strategy:**
-1. Call this endpoint on each heartbeat cycle (or on a separate timer if preferred)
-2. For each **enabled** deployment where `cert_status === "active"`:
+**Deployment change detection via `deployments_hash`:**
+
+The heartbeat response includes `deployments_hash` — a hash of all deployment IDs, enabled states, certificate IDs, and cert content hashes. The agent should:
+1. Store `deployments_hash` locally after each successful deployment sync
+2. On each heartbeat, compare the received `deployments_hash` with the stored value
+3. If different (or if the stored value is `null`), call `GET /api/agent/deployments` to get the full list
+4. If the same, skip the deployments call entirely — nothing has changed
+
+This detects all changes: new deployments, removed deployments, enabled/disabled toggles, certificate reassignments, and cert renewals. The agent only needs to make the extra API call when something actually changed.
+
+**Polling strategy (after fetching deployments):**
+1. For each **enabled** deployment where `cert_status === "active"`:
    - Compare `content_hash` with `last_deployed_hash`
    - If they differ (or `last_deployed_hash` is null), the cert has been renewed — download the bundle
-3. Skip deployments where `enabled === false` or `cert_status !== "active"`
+2. Skip deployments where `enabled === false` or `cert_status !== "active"`
+3. Remove local cert files for deployments that no longer appear in the server's list
 
 ---
 
@@ -321,8 +336,7 @@ Download the certificate + key PEM files for a specific deployment.
 **Error responses:**
 | Status | Meaning |
 |--------|---------|
-| `400` | Certificate not yet issued or not in `active` status |
-| `404` | Deployment not found or doesn't belong to this agent |
+| `400` | Certificate not yet issued or not in `active` status || `403` | Deployment is disabled || `404` | Deployment not found or doesn't belong to this agent |
 
 **Side effect:** The server updates `last_deployed_at` and `last_deployed_hash` for this deployment when the bundle is downloaded. This is reflected in subsequent `GET /deployments` responses.
 
@@ -422,7 +436,7 @@ INSTALL & ENROLL (one-time):
 
 HEARTBEAT LOOP (ongoing, every heartbeat_interval seconds):
   1. POST /api/agent/heartbeat — send { config_version: <last_acked_version> }
-  2. Receive: heartbeat_interval, config_version, actions, cert_expires_at
+  2. Receive: heartbeat_interval, config_version, actions, cert_expires_at, deployments_hash
   3. Process actions:
      - "renew_agent_cert" → immediately trigger cert renewal flow
      - "update_agent" → log (stub, no action required yet)
@@ -431,15 +445,18 @@ HEARTBEAT LOOP (ongoing, every heartbeat_interval seconds):
      a. Apply new config (update heartbeat timer to new interval)
      b. Immediately send another heartbeat with new config_version to acknowledge
   5. Check cert_expires_at — if < 15 days remain, trigger cert renewal
-  6. Sleep for heartbeat_interval seconds, then repeat from step 1
+  6. If deployments_hash changed → run POLL & DEPLOY
+  7. Sleep for heartbeat_interval seconds, then repeat from step 1
 
-POLL & DEPLOY (on each heartbeat cycle or separate timer):
+POLL & DEPLOY (when deployments_hash differs from local value):
   1. GET /api/agent/deployments — list assigned certificates
   2. For each enabled deployment where content_hash ≠ last_deployed_hash:
      a. GET /api/agent/deployments/:id/bundle — download cert+key
      b. Write files to configured deployment path (atomic write recommended)
      c. Run post-deploy hooks (e.g. reload nginx, restart service)
-  3. Skip disabled deployments and non-active certificates
+  3. Remove local cert files for deployments no longer in the server's list
+  4. Skip disabled deployments and non-active certificates
+  5. Store the new deployments_hash locally
 
 CERT RENEWAL (when < 15 days remain on agent cert OR "renew_agent_cert" action):
   1. Generate new RSA 2048 key pair
@@ -451,7 +468,7 @@ CERT RENEWAL (when < 15 days remain on agent cert OR "renew_agent_cert" action):
 
 RE-ENROLLMENT (admin-initiated, when cert is expired or compromised):
   1. Admin clicks "Re-enroll" in CertKeeper UI → gets new enrollment token
-  2. Old cert fingerprint is cleared server-side
+  2. Old cert is revoked via CRL and fingerprints are cleared server-side
   3. Agent must re-enroll using the new token (same flow as initial enrollment)
   4. All deployments are preserved — only the auth cert changes
 ```
@@ -543,6 +560,99 @@ deployments:
 - Log hook stdout/stderr for troubleshooting
 - A failed hook should not prevent deploying other certificates
 - Consider a timeout for hooks (e.g. 30 seconds)
+
+---
+
+## Generating Key Pairs and CSRs
+
+The agent must generate RSA key pairs and PKCS#10 CSRs for enrollment and cert renewal. The server verifies the CSR signature, so the CSR must be properly signed by the corresponding private key.
+
+**Node.js (via openssl child_process):**
+```javascript
+const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+function generateKeyAndCSR() {
+  const keyPath = path.join(os.tmpdir(), `agent-key-${Date.now()}.pem`);
+  const csrPath = path.join(os.tmpdir(), `agent-csr-${Date.now()}.pem`);
+
+  try {
+    execFileSync('openssl', [
+      'req', '-new', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', keyPath, '-out', csrPath,
+      '-subj', '/CN=agent',
+    ], { stdio: 'pipe' });
+
+    const key = fs.readFileSync(keyPath, 'utf-8');
+    const csr = fs.readFileSync(csrPath, 'utf-8');
+    return { key, csr };
+  } finally {
+    try { fs.unlinkSync(keyPath); } catch {}
+    try { fs.unlinkSync(csrPath); } catch {}
+  }
+}
+```
+
+**OpenSSL (shell):**
+```bash
+# Generate key pair + CSR in one step
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout client.key -out client.csr \
+  -subj "/CN=agent"
+
+# Read the CSR PEM for the API request
+CSR=$(cat client.csr)
+```
+
+**Python (cryptography library):**
+```python
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+
+# Generate key pair
+key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+# Create CSR
+csr = x509.CertificateSigningRequestBuilder().subject_name(
+    x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "agent")])
+).sign(key, hashes.SHA256())
+
+# PEM-encode for the API
+csr_pem = csr.public_bytes(serialization.Encoding.PEM).decode()
+key_pem = key.private_bytes(
+    serialization.Encoding.PEM,
+    serialization.PrivateFormat.TraditionalOpenSSL,
+    serialization.NoEncryption()
+).decode()
+```
+
+> **Note:** The CSR subject (e.g. `CN=agent`) doesn't matter — the server replaces it with the agent's name from the CertKeeper database. Any valid subject works.
+
+---
+
+## State Persistence
+
+The agent must persist certain state to survive restarts:
+
+| State | Where | Purpose |
+|-------|-------|---------|
+| `config_version` | `state.json` | Last acknowledged config version — sent in heartbeat requests |
+| `heartbeat_interval` | `state.json` | Current server-provided interval — used as initial timer on restart |
+| `deployments_hash` | `state.json` | Last known deployments hash from heartbeat — used to detect changes on next heartbeat |
+| `server_url` | `config.yml` | CertKeeper server URL |
+| `client.crt` | config dir | Agent mTLS certificate |
+| `client.key` | config dir | Agent private key (generated locally) |
+| `ca.crt` | config dir | CertKeeper CA certificate (for server TLS verification) |
+| Per-deployment `content_hash` | `state.json` | Last deployed content hash — used to detect renewals without re-downloading |
+
+On restart, the agent should:
+1. Load saved state (config_version, heartbeat_interval)
+2. Send an immediate heartbeat to re-establish liveness
+3. Check deployments for any cert changes that occurred while stopped
 
 ---
 

@@ -177,7 +177,8 @@ certkeeper/
 │   │   └── key.pem
 │   ├── ca/                   # Internal CA for mTLS
 │   │   ├── ca-cert.pem
-│   │   └── ca-key.pem
+│   │   ├── ca-key.pem
+│   │   └── crl.pem
 │   └── cloudflare.ini        # Certbot DNS credentials
 └── logs/
     └── app.log               # Rotated: 5 MB × 5 files
@@ -327,4 +328,4 @@ Three modes, configured in Settings → TLS:
 | **Custom PEM** | Upload your own cert + key PEM files via the Settings UI. |
 | **Managed** | Select one of your CertKeeper-managed Let's Encrypt certificates. The cert files are copied to `data/tls/` and auto-refreshed on renewal. |
 
-After changing TLS settings, the server requires a restart for the new certificate to take effect (the API response includes `restart: true`).
+TLS changes are applied immediately via hot-reload (`setSecureContext()`). No server restart is required.

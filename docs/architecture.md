@@ -60,7 +60,8 @@ data/                     Runtime data (created automatically)
 │   └── key.pem
 ├── ca/                   Internal CA for mTLS
 │   ├── ca-cert.pem
-│   └── ca-key.pem
+│   ├── ca-key.pem
+│   └── crl.pem
 └── cloudflare.ini        Certbot DNS plugin credentials
 ```
 
@@ -147,6 +148,7 @@ Key settings values:
 | `prev_cert_fingerprint` | TEXT | Previous cert fingerprint, **UNIQUE** (grace period) |
 | `prev_cert_expires_at` | TEXT | Previous cert expiry |
 | `cert_serial` | INTEGER | Monotonically increasing serial number |
+| `cert_serial_hex` | TEXT | X.509 serial number (hex string, for CRL entries) |
 | `enabled` | INTEGER | 1 (active) or 0 (disabled) |
 | `status` | TEXT | `online`, `offline`, or NULL (unknown/not enrolled) |
 | `next_contact_at` | TEXT | Expected next heartbeat deadline |
@@ -158,6 +160,16 @@ Key settings values:
 | `updated_at` | TEXT | `datetime('now')` |
 
 The `cert_fingerprint` and `prev_cert_fingerprint` columns are both UNIQUE. During cert renewal, the old fingerprint moves to `prev_cert_fingerprint` so both the old and new certs are accepted until the old one naturally expires.
+
+#### `revoked_agent_certs`
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER | Primary key, autoincrement |
+| `serial_hex` | TEXT | X.509 serial number (hex), UNIQUE |
+| `agent_name` | TEXT | Agent name at time of revocation |
+| `revoked_at` | TEXT | `datetime('now')` |
+
+Backing store for the X.509 v2 CRL (`data/ca/crl.pem`). Agent certificates are added here when agents are deleted, re-enrolled, or on cert renewal (old cert is revoked at the X.509 level). The CRL is rebuilt from this table on startup.
 
 #### `deployments`
 | Column | Type | Notes |
@@ -197,8 +209,8 @@ Migrations run inline in `db.js` during `initDatabase()`. Each migration inspect
 4. **Agent mTLS columns** — adds enrollment, fingerprint, and serial columns
 5. **Dual fingerprint** — adds `prev_cert_fingerprint` / `prev_cert_expires_at`
 6. **Heartbeat columns** — adds `status`, `next_contact_at`, `config_version`, `pending_actions`
-7. **Agent settings seed** — inserts default `agent_heartbeat_interval`, `agent_offline_threshold`, `agent_config_version` into `settings`
-
+7. **Agent settings seed** — inserts default `agent_heartbeat_interval`, `agent_offline_threshold`, `agent_config_version` into `settings`11. **X.509 serial hex** — adds `cert_serial_hex` to `agents` table for CRL entries
+12. **Revoked agent certs** — creates `revoked_agent_certs` table for CRL backing store
 ---
 
 ## Startup Sequence
@@ -213,10 +225,20 @@ Defined in `src/index.js` `start()`:
 6. **Recover stuck certs** — any certificates in `issuing`/`renewing` status from a prior crash → mark as `error`
 7. **Load TLS credentials** — self-signed (generated via `selfsigned` package), custom PEM, or managed Let's Encrypt cert
 8. **Initialize internal CA** — `ensureCA()` generates or loads the RSA 4096-bit root CA from `data/ca/`
-9. **Start HTTPS server** — `requestCert: true, rejectUnauthorized: false` with the internal CA cert in the trust chain
-10. **Start renewal scheduler** — two node-cron tasks (randomized twice-weekly)
-11. **Start agent monitor** — node-cron task every 1 minute
-12. **Start key rotation cron** — daily check; rotates encryption key every 30 days
+9. **Rebuild CRL** — rebuild the X.509 v2 CRL from the `revoked_agent_certs` table
+10. **Start HTTPS server** — `requestCert: true, rejectUnauthorized: false` with the internal CA cert and CRL in the trust chain
+11. **Start renewal scheduler** — two node-cron tasks (randomized twice-weekly)
+12. **Start agent monitor** — node-cron task every 1 minute
+13. **Start key rotation cron** — daily check; rotates encryption key every 30 days
+
+### Graceful Shutdown
+
+On `SIGTERM` or `SIGINT`, the server performs a graceful shutdown:
+
+1. Stop accepting new connections (`server.close()`)
+2. Stop background tasks (renewal scheduler, agent monitor, session cleanup)
+3. Flush the SQLite database to disk (`db.save()`)
+4. Wait 1 second for in-flight requests, then exit
 
 ---
 
@@ -368,7 +390,7 @@ The server's own HTTPS certificate can come from three sources:
 | **Custom PEM** | User upload via Settings UI | Cert + key PEM files uploaded and stored in `data/tls/`. |
 | **Managed** | A CertKeeper-managed Let's Encrypt cert | Certs copied from certbot's live directory to `data/tls/`. Auto-refreshed on renewal. |
 
-After changing TLS settings, the server requires a restart for the new certificate to take effect.
+TLS changes are applied immediately via hot-reload (`setSecureContext()`). No server restart is required.
 
 ---
 

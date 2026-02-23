@@ -106,7 +106,7 @@ When installed via the install script or `.deb`/`.rpm` package:
 ├── certkeeper.db                 SQLite database
 ├── .encryption-key               AES-256-GCM key
 ├── .session-secret               Session secret
-├── ca/                           Internal CA cert + key
+├── ca/                           Internal CA cert + key + CRL
 └── tls/                          Server TLS certs
 
 /var/log/certkeeper/              Log files (LOG_DIR)

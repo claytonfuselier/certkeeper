@@ -418,10 +418,24 @@ router.post('/heartbeat', (req, res) => {
     [nextContactAt, agentConfigVersion, ip, agent.id],
   );
 
-  const deploymentCount = db.get(
-    'SELECT COUNT(*) AS n FROM deployments WHERE agent_id = ?',
+  // Build deployments hash so the agent can detect changes without polling
+  // the full deployments list. Hash covers id, enabled, certificate_id, and
+  // content_hash (which changes on cert renewal).
+  const deps = db.all(
+    `SELECT d.id, d.enabled, d.certificate_id, c.certbot_name, c.status AS cert_status
+     FROM deployments d
+     JOIN certificates c ON c.id = d.certificate_id
+     WHERE d.agent_id = ?
+     ORDER BY d.id`,
     [agent.id],
   );
+  const depParts = deps.map((d) => {
+    const ch = d.cert_status === 'active' ? (certContentHash(d.certbot_name) || '') : '';
+    return `${d.id}:${d.enabled ? 1 : 0}:${d.certificate_id}:${ch}`;
+  });
+  const deploymentsHash = deps.length > 0
+    ? crypto.createHash('sha256').update(depParts.join('|')).digest('hex').slice(0, 16)
+    : null;
 
   const response = {
     ok: true,
@@ -429,7 +443,8 @@ router.post('/heartbeat', (req, res) => {
       id: agent.id,
       name: agent.name,
     },
-    deployments: deploymentCount?.n || 0,
+    deployments: deps.length,
+    deployments_hash: deploymentsHash,
     server_time: new Date().toISOString(),
     heartbeat_interval: intervalSeconds,
     config_version: configVersion,
