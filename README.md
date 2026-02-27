@@ -77,7 +77,7 @@ curl -fsSL https://raw.githubusercontent.com/claytonfuselier/certkeeper/main/ins
 
 Installs CertKeeper as a systemd service. The script handles dependencies (Node.js, certbot), downloads the latest `.deb`/`.rpm` package, and starts the service. See [Installation Guide](docs/installation.md) for details.
 
-### Manual Install
+### Manual Setup
 
 ```bash
 git clone https://github.com/claytonfuselier/certkeeper.git
@@ -104,4 +104,5 @@ sudo npm start
 ## License
 
 This project is open source and available under the [MIT License](LICENSE).
+
 
